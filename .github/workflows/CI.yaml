@@ -16,23 +16,22 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # ====== VARIABLES (comentadas) PARA HELM ======
-      # HELM_PAT: ${{ secrets.PAT_HELMCHART }}                         # PAT con permisos de lectura/escritura
-      # HELM_MANIFESTS_REPO: tuUsuario/tu-repo-manifiestos             # Repo donde vive el chart fuente
+      # HELM_PAT: ${{ secrets.PAT_HELMCHART }}                         # PAT GitHub con RW
+      # HELM_MANIFESTS_REPO: tuUsuario/tu-repo-manifiestos             # Repo del chart fuente
       # HELM_PAGES_REPO:    tuUsuario/helm-chart                       # Repo GitHub Pages (index.yaml)
-      # HELM_CHART_DIR:     charts/delivery-app                        # Carpeta del chart dentro del repo de manifiestos
-      # HELM_CHART_NAME:    delivery-app                                # Nombre del chart
-      # HELM_REPO_URL:      https://tuUsuario.github.io/helm-chart/     # URL pública del repo de charts
+      # HELM_CHART_DIR:     charts/delivery-app                        # Carpeta del chart
+      # HELM_CHART_NAME:    delivery-app                               # Nombre del chart
+      # HELM_REPO_URL:      https://tuUsuario.github.io/helm-chart/    # URL pública de charts
 
     steps:
       - name: Checkout main repo
         uses: actions/checkout@v4
 
-      # Verificación rápida para evitar fallas por rutas
+      # ---- Verifica que la app esté en delivery-app/ ----
       - name: Assert Node files exist
         shell: bash
         run: |
-          ls -la
-          ls -la delivery-app || true
+          set -e
           test -f delivery-app/package.json || (echo "Falta delivery-app/package.json" && exit 1)
           test -f delivery-app/package-lock.json || (echo "Falta delivery-app/package-lock.json" && exit 1)
 
@@ -42,19 +41,39 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
-        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+      # ====== LOGIN A DOCKER HUB (forzado y validado) ======
+      - name: Validate DockerHub secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${DOCKERHUB_USERNAME}" ] || { echo "::error::Missing DOCKERHUB_USERNAME secret"; exit 1; }
+          [ -n "${DOCKERHUB_TOKEN}" ]    || { echo "::error::Missing DOCKERHUB_TOKEN secret"; exit 1; }
+
+      - name: Logout any previous registry sessions (safety)
+        run: docker logout || true
+
+      - name: Login to Docker Hub (always)
         uses: docker/login-action@v3
         with:
+          registry: docker.io
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
-      # Lee APP_VERSION desde delivery-app/package.json sin errores de quoting
+      - name: Verify Docker login (must be ritatrcr)
+        shell: bash
+        run: |
+          set -e
+          WHO=$(docker info 2>/dev/null | awk -F': ' '/^ Username:/ {print $2}')
+          echo "Logged in as: ${WHO}"
+          [ "$WHO" = "ritatrcr" ] || { echo "::error::Estás logueado como '$WHO', debe ser 'ritatrcr'"; exit 1; }
+
+      # ====== LEE VERSIÓN DESDE package.json ======
       - name: Read app version
         id: vars
         shell: bash
         working-directory: ./delivery-app
         run: |
+          set -e
           APP_VERSION=$(node -e "console.log(require('./package.json').version || '0.0.0')")
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_OUTPUT"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
@@ -63,12 +82,12 @@ jobs:
           echo "CI_TAG=$CI_TAG" >> "$GITHUB_ENV"
           echo "Using APP_VERSION=$APP_VERSION CI_TAG=$CI_TAG"
 
-      # Construye y publica la imagen multi-arquitectura
+      # ====== BUILD & PUSH MULTI-ARCH ======
       - name: Build & Push image (multi-arch)
         uses: docker/build-push-action@v6
         with:
-          # Dockerfile en la RAÍZ que copia desde ./delivery-app
-          # Si movieras el Dockerfile a delivery-app/, cambia a:
+          # Dockerfile en la raíz que copia desde ./delivery-app
+          # Si tu Dockerfile vive en delivery-app/, cambia:
           #   context: ./delivery-app
           #   file: ./delivery-app/Dockerfile
           context: .
@@ -92,6 +111,12 @@ jobs:
           echo "  - $IMAGE_NAME:latest"
           echo "  - $IMAGE_NAME:v${APP_VERSION}"
           echo "  - $IMAGE_NAME:${CI_TAG}"
+
+      # (Opcional) Inspeccionar manifest multi-arch
+      - name: Inspect image manifest
+        continue-on-error: true
+        shell: bash
+        run: docker buildx imagetools inspect "$IMAGE_NAME:latest" || true
 
       # =======================
       #     HELM (COMENTADO)
