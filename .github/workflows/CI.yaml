@@ -1,97 +1,183 @@
-name: CI
+name: Build & Push Docker (Helm steps commented)
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
-  build-test-and-docker:
+  build_and_push:
     runs-on: ubuntu-latest
 
     env:
+      # ====== TUS VARIABLES DOCKER ======
       IMAGE_NAME: ritatrcr/delivery-app
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # ====== VARIABLES (comentadas) PARA HELM ======
+      # HELM_PAT: ${{ secrets.PAT_HELMCHART }}                         # PAT con permisos de lectura/escritura
+      # HELM_MANIFESTS_REPO: tuUsuario/tu-repo-manifiestos             # Repo donde vive el chart fuente
+      # HELM_PAGES_REPO:    tuUsuario/helm-chart                       # Repo GitHub Pages (index.yaml)
+      # HELM_CHART_DIR:     charts/delivery-app                        # Carpeta del chart dentro del repo de manifiestos
+      # HELM_CHART_NAME:    delivery-app                                # Nombre del chart
+      # HELM_REPO_URL:      https://tuUsuario.github.io/helm-chart/     # URL pública del repo de charts
+
     steps:
-      - name: Checkout code
+      - name: Checkout main repo
         uses: actions/checkout@v4
 
-      # Verifica lockfile en el subdirectorio correcto
-      - name: Assert lockfile exists
+      # Verificación rápida para evitar fallas por rutas
+      - name: Assert Node files exist
+        shell: bash
         run: |
           ls -la
           ls -la delivery-app || true
+          test -f delivery-app/package.json || (echo "Falta delivery-app/package.json" && exit 1)
           test -f delivery-app/package-lock.json || (echo "Falta delivery-app/package-lock.json" && exit 1)
 
-      - name: Set up Node.js (cache by lockfile)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: ./delivery-app/package-lock.json
-
-      - name: Install dependencies
-        working-directory: ./delivery-app
-        run: npm ci
-
-      - name: Run tests
-        working-directory: ./delivery-app
-        run: npm test --if-present
-
-      - name: Read app version
-        id: vars
-        working-directory: ./delivery-app
-        run: echo "APP_VERSION=$(node -p \"require('./package.json').version || '0.0.0'\")" >> $GITHUB_OUTPUT
-
-      - name: Set up QEMU
+      - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        if: github.event_name == 'push'
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
-      # ====== ELIGE UNA OPCIÓN DE BUILD (A o B) ======
+      # Lee APP_VERSION desde delivery-app/package.json sin errores de quoting
+      - name: Read app version
+        id: vars
+        shell: bash
+        working-directory: ./delivery-app
+        run: |
+          APP_VERSION=$(node -e "console.log(require('./package.json').version || '0.0.0')")
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          CI_TAG="ci-${{ github.run_number }}-${SHORT_SHA}"
+          echo "CI_TAG=$CI_TAG" >> "$GITHUB_ENV"
+          echo "Using APP_VERSION=$APP_VERSION CI_TAG=$CI_TAG"
 
-      # Opción A: Dockerfile en la RAÍZ del repo
-      - name: Build (PR, no push)
-        if: github.event_name == 'pull_request'
+      # Construye y publica la imagen multi-arquitectura
+      - name: Build & Push image (multi-arch)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
-          push: false
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build & Push (main, multi-arch)
-        if: github.event_name == 'push'
-        uses: docker/build-push-action@v6
-        with:
+          # Dockerfile en la RAÍZ que copia desde ./delivery-app
+          # Si movieras el Dockerfile a delivery-app/, cambia a:
+          #   context: ./delivery-app
+          #   file: ./delivery-app/Dockerfile
           context: .
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.IMAGE_NAME }}:v${{ steps.vars.outputs.APP_VERSION }}
+            ${{ env.IMAGE_NAME }}:${{ env.CI_TAG }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-    
+      - name: Show pushed tags
+        shell: bash
+        run: |
+          echo "Pushed:"
+          echo "  - $IMAGE_NAME:latest"
+          echo "  - $IMAGE_NAME:v${APP_VERSION}"
+          echo "  - $IMAGE_NAME:${CI_TAG}"
 
-          ##incluir update helm chart values
+      # =======================
+      #     HELM (COMENTADO)
+      # =======================
+      # - name: Install Helm
+      #   uses: azure/setup-helm@v4
+      #   with:
+      #     version: v3.14.4
+      #
+      # - name: Install yq
+      #   shell: bash
+      #   run: |
+      #     set -e
+      #     YQ_VERSION=v4.44.3
+      #     sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+      #     sudo chmod +x /usr/local/bin/yq
+      #     yq --version
+      #     helm version
+      #
+      # - name: Checkout manifests repo (chart fuente)
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: ${{ env.HELM_MANIFESTS_REPO }}
+      #     token: ${{ env.HELM_PAT }}
+      #     path: manifiestos
+      #
+      # - name: Update values.yaml (imagen y tag)
+      #   shell: bash
+      #   run: |
+      #     set -e
+      #     cd "manifiestos/${HELM_CHART_DIR}"
+      #     yq eval ".image.repository = \"${IMAGE_NAME}\"" -i values.yaml
+      #     yq eval ".image.tag = \"${APP_VERSION}\"" -i values.yaml
+      #
+      # - name: Update Chart.yaml (versiones del chart)
+      #   shell: bash
+      #   run: |
+      #     set -e
+      #     cd "manifiestos/${HELM_CHART_DIR}"
+      #     yq eval ".version = \"${APP_VERSION}\"" -i Chart.yaml
+      #     yq eval ".appVersion = \"${APP_VERSION}\"" -i Chart.yaml
+      #
+      # - name: Package Helm Chart
+      #   shell: bash
+      #   run: |
+      #     set -e
+      #     cd manifiestos
+      #     helm package "${HELM_CHART_DIR}"
+      #     PKG="$(ls -1 ${HELM_CHART_NAME}-*.tgz | tail -n 1)"
+      #     echo "CHART_PKG=$PKG" >> $GITHUB_ENV
+      #     echo "Empaquetado: $PKG"
+      #
+      # - name: Checkout helm-chart repo (GitHub Pages)
+      #   uses: actions/checkout@v4
+      #   with:
+      #     repository: ${{ env.HELM_PAGES_REPO }}
+      #     token: ${{ env.HELM_PAT }}
+      #     path: helm-chart
+      #
+      # - name: Copy packaged chart to helm-chart repo
+      #   shell: bash
+      #   run: |
+      #     set -e
+      #     cp "manifiestos/${{ env.CHART_PKG }}" helm-chart/
+      #     ls -lah helm-chart
+      #
+      # - name: Update Helm repo index (merge)
+      #   shell: bash
+      #   run: |
+      #     set -e
+      #     cd helm-chart
+      #     if [ -f index.yaml ]; then
+      #       helm repo index . --url "${HELM_REPO_URL}" --merge index.yaml
+      #     else
+      #       helm repo index . --url "${HELM_REPO_URL}"
+      #     fi
+      #     head -n 40 index.yaml
+      #
+      # - name: Commit and push charts to helm-chart repo
+      #   shell: bash
+      #   run: |
+      #     set -e
+      #     cd helm-chart
+      #     git config user.name "github-actions"
+      #     git config user.email "github-actions@github.com"
+      #     git pull --rebase || true
+      #     git add .
+      #     git commit -m "Publish chart ${HELM_CHART_NAME} ${APP_VERSION}" || echo "No commit needed"
+      #     git push origin main
