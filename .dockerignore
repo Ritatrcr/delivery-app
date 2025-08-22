@@ -1,9 +1,39 @@
-**/node_modules
-**/npm-debug.log
-**/.DS_Store
+# VCS
 .git
 .gitignore
+.github/
+
+# Node/yarn
+node_modules
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+.npmrc
+.yarn/*
+.yarnrc.yml
+
+# Dependencias y caches
+**/.cache
+**/.parcel-cache
+**/.turbo
+**/.next
+**/coverage
+**/tmp
+**/dist
+**/build
+
+# SO/editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode
+.idea
+
+# Entornos locales / secretos
 .env
-docker-compose.yml
-postgres/
-*.md
+.env.*
+!.env.example
+
+# Docker
+Dockerfile.dev
+docker-compose*.yml
