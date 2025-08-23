@@ -174,63 +174,23 @@ jobs:
       - name: Update values-dev/prod with new Docker tag and (optionally) Chart.yaml version
         shell: bash
         env:
-          # APP_VERSION y DOCKER_VERSION ya están en el entorno por pasos previos
-          # IMAGE_NAME, HELM_CHART_DIR, HELM_CHART_NAME también.
-          GIT_USER: ${{ env.GH_USER }}
+          GIT_USER: ritatrcr
           PAT: ${{ env.PAT_HELMCHART }}
         run: |
           set -euo pipefail
           cd manifests
 
+          # --- CONFIG REMOTO CON PAT (antes de hacer nada con git) ---
+          git remote set-url origin "https://${GIT_USER}:${PAT}@github.com/${HELM_MANIFESTS_REPO}.git"
+
           echo "Usando IMAGE_NAME=${IMAGE_NAME}"
-          echo "Usando APP_VERSION=${APP_VERSION}  (Chart.yaml no lleva 'v')"
-          echo "Usando DOCKER_VERSION=${DOCKER_VERSION}  (ej: v0.1.5)"
+          echo "Usando APP_VERSION=${APP_VERSION}"
+          echo "Usando DOCKER_VERSION=${DOCKER_VERSION}"
 
-          # Función que intenta actualizar app.image.*, backend.image.*, frontend.image.*
-          bump_images () {
-            local file="$1"
-            echo "Actualizando $file"
+          # (… tus comandos yq de actualización …)
 
-            # app.image.*
-            yq -i '
-              (.app.image.repository |= env(IMAGE_NAME)) |
-              (.app.image.tag        |= env(DOCKER_VERSION))
-            ' "$file" || true
-
-            # backend.image.* y frontend.image.*
-            yq -i '
-              (.backend.image.repository |= env(IMAGE_NAME)) |
-              (.backend.image.tag        |= env(DOCKER_VERSION)) |
-              (.frontend.image.repository |= env(IMAGE_NAME)) |
-              (.frontend.image.tag        |= env(DOCKER_VERSION))
-            ' "$file" || true
-          }
-
-          # Actualiza values-dev/prod si existen
-          for f in \
-            "${HELM_CHART_DIR}/values-dev.yaml" \
-            "${HELM_CHART_DIR}/values-prod.yaml"
-          do
-            [ -f "$f" ] && bump_images "$f" || echo "Archivo no encontrado (ok): $f"
-          done
-
-          # ====== OPCIONAL: fija la versión del Chart a la versión de la app ======
-          # Helm exige SemVer sin 'v'. APP_VERSION ya viene sin 'v'.
-          # Si prefieres agregar build metadata con el run_number, descomenta la línea con +${{ github.run_number }}.
-          if [ -f "${HELM_CHART_DIR}/Chart.yaml" ]; then
-            echo "Ajustando Chart.yaml version -> ${APP_VERSION}"
-            yq -i ".version = strenv(APP_VERSION)" "${HELM_CHART_DIR}/Chart.yaml"
-            # Opción con build metadata:
-            # yq -i ".version = \"${APP_VERSION}+${{ github.run_number }}\"" "${HELM_CHART_DIR}/Chart.yaml"
-          else
-            echo "No existe Chart.yaml en ${HELM_CHART_DIR} (no se actualiza versión)."
-          fi
-
-          # Git commit + push
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
           git commit -m "chore: set image ${IMAGE_NAME}:${DOCKER_VERSION} and chart version ${APP_VERSION}" || echo "No hay cambios que commitear"
-          # fuerza remoto con PAT para evitar 403 del GITHUB_TOKEN
-          git remote set-url origin "https://${GIT_USER}:${PAT}@github.com/${HELM_MANIFESTS_REPO}.git"
           git push origin main
