@@ -37,7 +37,7 @@ jobs:
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
 
-      # ====== Validación temprana del PAT (contra repos) ======
+      # ====== Validación temprana del PAT contra los dos repos ======
       - name: Validate PAT to both repos
         shell: bash
         run: |
@@ -46,7 +46,7 @@ jobs:
           for REPO in "${HELM_MANIFESTS_REPO}" "${HELM_PAGES_REPO}"; do
             echo "Comprobando acceso a https://github.com/${REPO} ..."
             git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null 2>&1 \
-              || { echo "::error::Sin acceso al repo ${REPO} con el PAT (permisos Contents:RW / repo seleccionado / SSO)."; exit 1; }
+              || { echo "::error::Sin acceso al repo ${REPO} con el PAT (Contents:RW / repo seleccionado / SSO)."; exit 1; }
           done
           echo "PAT OK para ambos repos."
 
@@ -237,6 +237,18 @@ jobs:
             "https://${GH_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git" helm-chart
           ls -lah helm-chart
 
+      # ====== PREPARAR rama limpia en helm-chart (evita unstaged en pull) ======
+      - name: Prepare clean branch in helm-chart
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd helm-chart
+          git fetch --all
+          git checkout "${HELM_PAGES_BRANCH}"
+          git reset --hard "origin/${HELM_PAGES_BRANCH}"
+          git clean -fdx
+          git status
+
       - name: Copy packaged chart to helm-chart repo
         shell: bash
         run: |
@@ -256,18 +268,16 @@ jobs:
           fi
           head -n 40 index.yaml
 
-      # ====== PUSH AL REPO DE PAGES (usa helm-chart, no helm-pages) ======
+      # ====== PUSH al repo de Pages (forzamos remote con PAT) ======
       - name: Commit & push changes (to helm-chart repo)
         shell: bash
-        env:
-          PAT_USER: ritatrcr
         run: |
           set -euxo pipefail
           cd helm-chart
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
-          git fetch origin "${HELM_PAGES_BRANCH}" || true
-          git pull --rebase origin "${HELM_PAGES_BRANCH}" || true
           git add -A
           git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
+          # Asegura que el remote lleve credenciales
+          git remote set-url origin "https://${GH_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git"
           git push origin "${HELM_PAGES_BRANCH}"
