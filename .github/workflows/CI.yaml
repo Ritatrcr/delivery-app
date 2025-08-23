@@ -20,8 +20,9 @@ jobs:
       HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
       HELM_PAGES_REPO: ritatrcr/helm-chart
       HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
+      HELM_PAGES_BRANCH: main   # <-- cámbiala a gh-pages si quieres
 
-      # Ruta/nombre "por defecto" del chart (se validará/auto-detectará)
+      # Ruta/nombre por defecto del chart (se validará/auto-detectará)
       HELM_CHART_DIR: charts/patrones
       HELM_CHART_NAME: patrones
 
@@ -91,7 +92,7 @@ jobs:
         run: |
           set -e
           echo "DOCKER_VERSION=v${APP_VERSION}" >> "$GITHUB_ENV"
-          # Nota: usar "+" en chart version es válido; si lo prefieres, cambia a ".${{ github.run_number }}"
+          # Puedes cambiar '+' por '.' si prefieres semver puro
           echo "CHART_VERSION=${APP_VERSION}+${{ github.run_number }}" >> "$GITHUB_ENV"
           echo "DOCKER_VERSION=$DOCKER_VERSION"
           echo "CHART_VERSION=$CHART_VERSION"
@@ -208,13 +209,31 @@ jobs:
           echo "CHART_PKG=$PKG" >> $GITHUB_ENV
           echo "Empaquetado: $PKG"
 
-      # ====== Checkout del repo de Pages (índice de charts) ======
-      - name: Checkout helm-chart repo (GitHub Pages)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.HELM_PAGES_REPO }}
-          token: ${{ secrets.PAT_HELMCHART }}
-          path: helm-chart
+      # ====== Preparar repo de Pages (crea rama si falta) ======
+      - name: Prepare helm-chart repo (create branch if missing)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAT_HELMCHART }}
+        run: |
+          set -e
+          REPO="${HELM_PAGES_REPO}"
+          BRANCH="${HELM_PAGES_BRANCH:-main}"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" helm-chart || {
+            echo "::error::No pude clonar ${REPO}"; exit 1; }
+          cd helm-chart
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git checkout "$BRANCH"
+          else
+            echo "Branch '$BRANCH' no existe; creándolo…"
+            git checkout --orphan "$BRANCH"
+            rm -rf *
+            echo "# Helm Chart Repo" > README.md
+            git config user.name "github-actions"
+            git config user.email "github-actions@github.com"
+            git add README.md
+            git commit -m "chore: init $BRANCH"
+            git push -u origin "$BRANCH"
+          fi
 
       - name: Copy packaged chart to helm-chart repo
         shell: bash
@@ -245,4 +264,4 @@ jobs:
           git pull --rebase || true
           git add .
           git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
-          git push origin main
+          git push origin "${HELM_PAGES_BRANCH:-main}"
