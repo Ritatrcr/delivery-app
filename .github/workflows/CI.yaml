@@ -1,9 +1,8 @@
-name: Build, Push Docker and Update Helm Chart
+name: Build, Push Docker and Publish Helm Chart
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   workflow_dispatch:
 
 concurrency:
@@ -11,46 +10,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_and_update:
+  build_and_publish:
     runs-on: ubuntu-latest
 
     env:
-      # ====== Docker image ======
+      # ========= Docker =========
       IMAGE_NAME: ritatrcr/delivery-app
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ====== Helm / repos ======
-      PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}   # PAT con RW a ambos repos
+      # ========= GitHub / PAT =========
       GH_USER: ritatrcr
-      HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
-      HELM_PAGES_REPO: ritatrcr/helm-chart
-      HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
-      HELM_PAGES_BRANCH: main
+      PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}   # PAT con Contents:RW + SSO en ambos repos
 
-      # Ruta/nombre del chart en el repo de manifiestos
+      # ========= Repos externos =========
+      HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
+      HELM_PAGES_REPO:     ritatrcr/helm-chart
+      HELM_PAGES_BRANCH:   main
+      HELM_REPO_URL:       https://ritatrcr.github.io/helm-chart/
+
+      # ========= Ubicación del chart en el repo de manifiestos =========
       HELM_CHART_DIR: charts/pedido-app
       HELM_CHART_NAME: pedido-app
 
+      # (Opcional) rutas de values por ambiente dentro del chart
+      VALUES_DEV:  values-dev.yaml
+      VALUES_PROD: values-prod.yaml
+
     steps:
-      # ====== Checkout de este repo (usa GITHUB_TOKEN por defecto) ======
-      - name: Checkout app repo (this)
+      # ============ Checkout repo de la app ============
+      - name: Checkout (app repo)
         uses: actions/checkout@v4
 
-      # ====== Validación temprana del PAT contra los dos repos ======
-      - name: Validate PAT to both repos
-        shell: bash
-        run: |
-          set -euo pipefail
-          [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::Secret PAT_HELMCHART vacío/no configurado"; exit 1; }
-          for REPO in "${HELM_MANIFESTS_REPO}" "${HELM_PAGES_REPO}"; do
-            echo "Comprobando acceso a https://github.com/${REPO} ..."
-            git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null 2>&1 \
-              || { echo "::error::Sin acceso al repo ${REPO} con el PAT (Contents:RW / repo seleccionado / SSO)."; exit 1; }
-          done
-          echo "PAT OK para ambos repos."
-
-      # ====== Herramientas ======
+      # ============ Herramientas ============
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
@@ -63,34 +55,21 @@ jobs:
           YQ_VERSION=v4.44.3
           sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           sudo chmod +x /usr/local/bin/yq
-          yq --version
-          helm version
+          helm version && yq --version
 
-      # ---- Verifica que la app esté en delivery-app/ ----
-      - name: Assert Node files exist
-        shell: bash
-        run: |
-          set -euxo pipefail
-          test -f delivery-app/package.json || (echo "Falta delivery-app/package.json" && exit 1)
-          test -f delivery-app/package-lock.json || (echo "Falta delivery-app/package-lock.json" && exit 1)
-
-      # ====== Docker multi-arch build ======
-      - name: Set up QEMU (multi-arch)
+      - name: Setup QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
 
-      - name: Set up Docker Buildx
+      - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ====== LOGIN A DOCKER HUB ======
+      # ============ Login Docker Hub ============
       - name: Validate DockerHub secrets
         shell: bash
         run: |
           set -euxo pipefail
-          [ -n "${DOCKERHUB_USERNAME}" ] || { echo "::error::Missing DOCKERHUB_USERNAME secret"; exit 1; }
-          [ -n "${DOCKERHUB_TOKEN}" ]    || { echo "::error::Missing DOCKERHUB_TOKEN secret"; exit 1; }
-
-      - name: Logout any previous registry sessions (safety)
-        run: docker logout || true
+          [ -n "${DOCKERHUB_USERNAME}" ] || { echo "::error::Missing DOCKERHUB_USERNAME"; exit 1; }
+          [ -n "${DOCKERHUB_TOKEN}" ]    || { echo "::error::Missing DOCKERHUB_TOKEN"; exit 1; }
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -99,43 +78,36 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
-      - name: Verify Docker login (must be ritatrcr)
+      # ============ Leer versión de la app ============
+      # Si NO es Node, reemplaza este paso por tu forma de versionar (p.ej. Maven, Gradle, Poetry, etc.)
+      - name: Read APP_VERSION from package.json
+        id: ver
         shell: bash
         run: |
           set -euxo pipefail
-          WHO=$(docker info 2>/dev/null | awk -F': ' '/^ Username:/ {print $2}')
-          echo "Logged in as: ${WHO}"
-          [ "$WHO" = "ritatrcr" ] || { echo "::error::Estás logueado como '$WHO', debe ser 'ritatrcr'"; exit 1; }
-
-      # ====== LEE VERSIÓN DESDE package.json ======
-      - name: Read app version
-        id: vars
-        shell: bash
-        working-directory: ./delivery-app
-        run: |
-          set -euxo pipefail
-          APP_VERSION=$(node -e "console.log(require('./package.json').version || '0.0.0')")
+          if [ -f package.json ]; then
+            APP_VERSION=$(node -e "console.log(require('./package.json').version || '0.0.0')")
+          elif [ -f delivery-app/package.json ]; then
+            APP_VERSION=$(node -e "console.log(require('./delivery-app/package.json').version || '0.0.0')")
+          else
+            echo "::warning::No se encontró package.json; usando 0.0.0"
+            APP_VERSION="0.0.0"
+          fi
+          echo "APP_VERSION=$APP_VERSION"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_OUTPUT"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+
           SHORT_SHA="${GITHUB_SHA::7}"
           CI_TAG="ci-${{ github.run_number }}-${SHORT_SHA}"
           echo "CI_TAG=$CI_TAG" >> "$GITHUB_ENV"
-          echo "Using APP_VERSION=$APP_VERSION CI_TAG=$CI_TAG"
 
-      - name: Compute release vars (docker & chart)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          : "${APP_VERSION:?APP_VERSION no está definido (ver paso Read app version)}"
-          DOCKER_VERSION="v${APP_VERSION}"
-          CHART_VERSION="${APP_VERSION}+${{ github.run_number }}"
-          echo "DOCKER_VERSION=$DOCKER_VERSION"
-          echo "CHART_VERSION=$CHART_VERSION"
-          echo "DOCKER_VERSION=$DOCKER_VERSION" >> "$GITHUB_ENV"
-          echo "CHART_VERSION=$CHART_VERSION"   >> "$GITHUB_ENV"
+          # Normalizamos etiquetas de Docker y Chart
+          echo "DOCKER_VERSION=v${APP_VERSION}" >> "$GITHUB_ENV"
+          # El chart usará <APP_VERSION> + run para evitar colisiones (p.ej. 1.2.3+57)
+          echo "CHART_VERSION=${APP_VERSION}+${{ github.run_number }}" >> "$GITHUB_ENV"
 
-      # ====== BUILD & PUSH MULTI-ARCH ======
-      - name: Build & Push image (multi-arch)
+      # ============ Build & Push multi-arch ============
+      - name: Build & Push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -144,7 +116,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:v${{ steps.vars.outputs.APP_VERSION }}
+            ${{ env.IMAGE_NAME }}:${{ env.DOCKER_VERSION }}
             ${{ env.IMAGE_NAME }}:${{ env.CI_TAG }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
@@ -155,129 +127,151 @@ jobs:
       - name: Show pushed tags
         shell: bash
         run: |
-          set -euxo pipefail
           echo "Pushed:"
-          echo "  - $IMAGE_NAME:latest"
-          echo "  - $IMAGE_NAME:v${APP_VERSION}"
-          echo "  - $IMAGE_NAME:${CI_TAG}"
+          echo " - $IMAGE_NAME:latest"
+          echo " - $IMAGE_NAME:${DOCKER_VERSION}"
+          echo " - $IMAGE_NAME:${CI_TAG}"
 
-      # ====== CLONE MANIFIESTOS (manual con git+PAT) ======
-      - name: Clone manifests repo (manual)
+      # ============ Validación de PAT contra ambos repos ============
+      - name: Validate PAT against repos
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::PAT_HELMCHART vacío"; exit 1; }
+          for REPO in "${HELM_MANIFESTS_REPO}" "${HELM_PAGES_REPO}"; do
+            echo "Testing https://github.com/${REPO} ..."
+            git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null || {
+              echo "::error::Sin acceso a ${REPO} con el PAT (Contents:RW / SSO)"; exit 1;
+            }
+          done
+          echo "PAT OK."
+
+      # ============ Clonar repos externos ============
+      - name: Checkout manifests repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HELM_MANIFESTS_REPO }}
+          path: manifests
+          token: ${{ env.PAT_HELMCHART }}
+          persist-credentials: false
+
+      - name: Checkout helm-chart (Pages) repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HELM_PAGES_REPO }}
+          ref: ${{ env.HELM_PAGES_BRANCH }}
+          path: helm-pages
+          token: ${{ env.PAT_HELMCHART }}
+          persist-credentials: false
+
+      # ============ Actualizar values y Chart.yaml con la versión Docker ============
+      - name: Bump image tag in values (dev/prod) and set appVersion
         shell: bash
         run: |
           set -euxo pipefail
-          git clone --depth 1 --branch main \
-            "https://${GH_USER}:${PAT_HELMCHART}@github.com/${HELM_MANIFESTS_REPO}.git" manifiestos
-          ls -lah manifiestos
+          CHART_DIR="manifests/${HELM_CHART_DIR}"
 
-      # ====== AUTODETECCIÓN DE RUTA DEL CHART ======
-      - name: Detect chart directory
-        id: chartdir
+          test -f "${CHART_DIR}/Chart.yaml"
+          yq -i ".appVersion = \"${DOCKER_VERSION}\"" "${CHART_DIR}/Chart.yaml"
+
+          # Si usas estructura tipo:
+          # image:
+          #   repository: ritatrcr/delivery-app
+          #   tag: vX.Y.Z
+          for F in "${VALUES_DEV}" "${VALUES_PROD}"; do
+            P="${CHART_DIR}/${F}"
+            if [ -f "$P" ]; then
+              yq -i ".image.repository = \"${IMAGE_NAME}\"" "$P" || true
+              yq -i ".image.tag = \"${DOCKER_VERSION}\"" "$P" || true
+            fi
+          done
+
+          echo "==== Chart.yaml (head) ===="
+          head -n 20 "${CHART_DIR}/Chart.yaml"
+
+      # ============ Lint, setear version del chart y empaquetar ============
+      - name: Lint chart
         shell: bash
         run: |
           set -euxo pipefail
-          CANDIDATE1="manifiestos/${HELM_CHART_DIR}"
-          CANDIDATE2="${HELM_CHART_DIR}"
-          if [ -d "$CANDIDATE1" ]; then
-            CHART_DIR="$CANDIDATE1"
-          elif [ -d "$CANDIDATE2" ]; then
-            CHART_DIR="$CANDIDATE2"
-          else
-            echo "::error::No se encontró el chart en '$CANDIDATE1' ni en '$CANDIDATE2'"
-            ls -lah manifiestos || true
-            exit 1
-          fi
-          echo "CHART_DIR=$CHART_DIR" >> "$GITHUB_OUTPUT"
-          echo "CHART_DIR=$CHART_DIR" >> "$GITHUB_ENV"
-          echo "Usando CHART_DIR=$CHART_DIR"
+          helm lint "manifests/${HELM_CHART_DIR}"
 
-      - name: Lint Helm chart
+      - name: Set Chart version and commit manifests
         shell: bash
+        env:
+          PAT_USER: ${{ env.GH_USER }}
+          PAT_TOKEN: ${{ env.PAT_HELMCHART }}
         run: |
           set -euxo pipefail
-          helm lint "$CHART_DIR"
+          CHART_DIR="manifests/${HELM_CHART_DIR}"
 
-      - name: Update Helm chart values.yaml (image repo & tag)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "$CHART_DIR"
-          yq -i ".image.repository = \"${IMAGE_NAME}\"" values.yaml
-          yq -i ".image.tag = \"${DOCKER_VERSION}\""     values.yaml
-          echo "values.yaml actualizado"
+          # El .tgz llevará version = APP_VERSION+run (derivada de Docker)
+          yq -i ".version = \"${CHART_VERSION}\"" "${CHART_DIR}/Chart.yaml"
 
-      - name: Update Chart version in Chart.yaml
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd "$CHART_DIR"
-          yq -i ".version = \"${CHART_VERSION}\"" Chart.yaml
-          yq -i ".appVersion = \"v${APP_VERSION}\"" Chart.yaml
-          echo "Chart.yaml actualizado"
+          cd manifests
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add "${HELM_CHART_DIR}/Chart.yaml" \
+                  "${HELM_CHART_DIR}/${VALUES_DEV}" \
+                  "${HELM_CHART_DIR}/${VALUES_PROD}" || true
+          git commit -m "chore(chart): appVersion=${DOCKER_VERSION} version=${CHART_VERSION} image=${IMAGE_NAME}:${DOCKER_VERSION}" || echo "No commit needed"
 
-      - name: Package Helm Chart
+          # Push de cambios al repo de manifiestos
+          git remote set-url origin "https://${PAT_USER}:${PAT_TOKEN}@github.com/${HELM_MANIFESTS_REPO}.git"
+          git pull --rebase || true
+          git push origin HEAD:main
+
+      - name: Package chart into helm-pages repo
         id: pkg
         shell: bash
         run: |
           set -euxo pipefail
-          # Empaqueta el chart en el workspace (archivo: pedido-app-<CHART_VERSION>.tgz)
-          helm package "$CHART_DIR" -d "$GITHUB_WORKSPACE"
-          PKG_PATH="$(ls -1t "$GITHUB_WORKSPACE/${HELM_CHART_NAME}-"*.tgz | head -n 1)"
+          CHART_DIR="manifests/${HELM_CHART_DIR}"
+
+          # Empaquetar directo dentro de helm-pages/
+          helm package "${CHART_DIR}" -d "helm-pages"
+
+          PKG_PATH="$(ls -1t helm-pages/${HELM_CHART_NAME}-*.tgz | head -n 1)"
           test -f "$PKG_PATH"
-          echo "CHART_PKG=$PKG_PATH" >> "$GITHUB_ENV"
-          echo "Empaquetado: $PKG_PATH"
-          tar -tzf "$PKG_PATH" | grep -E 'values-(dev|prod)\.yaml' || true
+          echo "PKG_PATH=$PKG_PATH" >> "$GITHUB_OUTPUT"
 
-      # ====== CLONE helm-chart (manual con git+PAT) ======
-      - name: Clone helm-chart repo (Pages, manual)
+          # Validar que el .tgz use la CHART_VERSION esperada
+          BN="$(basename "$PKG_PATH")"
+          PKG_VER="${BN#${HELM_CHART_NAME}-}"
+          PKG_VER="${PKG_VER%.tgz}"
+          echo "Empaquetado: $BN (version=$PKG_VER)"
+          if [ "$PKG_VER" != "${CHART_VERSION}" ]; then
+            echo "::error::El tgz ($PKG_VER) no coincide con CHART_VERSION (${CHART_VERSION})"; exit 1
+          fi
+
+      # ============ Regenerar/merge index.yaml y publicar a Pages ============
+      - name: Update index.yaml (merge) in helm-pages
         shell: bash
         run: |
           set -euxo pipefail
-          git clone --depth 1 --branch "${HELM_PAGES_BRANCH}" \
-            "https://${GH_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git" helm-chart
-          ls -lah helm-chart
-
-      # ====== PREPARAR rama limpia en helm-chart (evita unstaged en pull) ======
-      - name: Prepare clean branch in helm-chart
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd helm-chart
-          git fetch --all
-          git checkout "${HELM_PAGES_BRANCH}"
-          git reset --hard "origin/${HELM_PAGES_BRANCH}"
-          git clean -fdx
-          git status
-
-      - name: Copy packaged chart to helm-chart repo
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cp "${CHART_PKG}" helm-chart/
-          ls -lah helm-chart
-
-      - name: Update Helm repo index (merge)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd helm-chart
+          cd helm-pages
           if [ -f index.yaml ]; then
             helm repo index . --url "${HELM_REPO_URL}" --merge index.yaml
           else
             helm repo index . --url "${HELM_REPO_URL}"
           fi
-          head -n 40 index.yaml
+          echo "==== index.yaml (head) ===="
+          head -n 25 index.yaml
+          echo "==== paquetes ===="
+          ls -lh *.tgz
 
-      # ====== PUSH al repo de Pages (forzamos remote con PAT) ======
-      - name: Commit & push changes (to helm-chart repo)
+      - name: Commit & push to helm-chart (Pages)
         shell: bash
+        env:
+          PAT_USER: ${{ env.GH_USER }}
+          PAT_TOKEN: ${{ env.PAT_HELMCHART }}
         run: |
           set -euxo pipefail
-          cd helm-chart
+          cd helm-pages
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
-          git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
-          # Asegura que el remote lleve credenciales
-          git remote set-url origin "https://${GH_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git"
+          git commit -m "Publish ${HELM_CHART_NAME} ${CHART_VERSION} (app ${DOCKER_VERSION})" || echo "No commit needed"
+          git remote set-url origin "https://${PAT_USER}:${PAT_TOKEN}@github.com/${HELM_PAGES_REPO}.git"
+          git pull --rebase || true
           git push origin "${HELM_PAGES_BRANCH}"
