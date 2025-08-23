@@ -32,11 +32,21 @@ jobs:
       HELM_CHART_NAME: pedido-app
 
     steps:
-      # ====== Checkout de este repo (app-delivery) ======
+      # ====== Checkout de este repo (app-delivery) con PAT ======
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
         with:
+          token: ${{ env.PAT_HELMCHART }}   # <- evita usar GITHUB_TOKEN implícito
           persist-credentials: false
+
+      # ====== Validación temprana del PAT ======
+      - name: Validate PAT
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::Secret PAT_HELMCHART vacío/no configurado"; exit 1; }
+          # Sanity check contra la API; 401/403 => PAT inválido o sin permisos
+          curl -sSf -H "Authorization: Bearer ${PAT_HELMCHART}" https://api.github.com/user >/dev/null
 
       # ====== Herramientas ======
       - name: Install Helm
@@ -154,7 +164,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_MANIFESTS_REPO }}
-          token: ${{ env.PAT_HELMCHART }}
+          token: ${{ env.PAT_HELMCHART }}   # <- usa el mismo PAT
           path: manifiestos
           persist-credentials: false
 
@@ -222,7 +232,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_PAGES_REPO }}
-          token: ${{ env.PAT_HELMCHART}}
+          token: ${{ env.PAT_HELMCHART }}  # <- usa el mismo PAT
           path: helm-chart
           ref: ${{ env.HELM_PAGES_BRANCH }}
           persist-credentials: false
@@ -255,9 +265,11 @@ jobs:
           cd helm-chart
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
-          git pull --rebase || true
+          # Evita non-fast-forward
+          git fetch origin "${HELM_PAGES_BRANCH}" || true
+          git pull --rebase origin "${HELM_PAGES_BRANCH}" || true
           git add -A
           git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
-          # Fuerza remoto con PAT para evitar 403
+          # Fuerza remoto con PAT para evitar 403 / Bad credentials
           git remote set-url origin "https://${PAT_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git"
           git push origin "${HELM_PAGES_BRANCH}"
