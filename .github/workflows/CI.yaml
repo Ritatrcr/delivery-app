@@ -154,7 +154,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_MANIFESTS_REPO }}
-          token: ${{ env.HELM_PAT }}
+          token: ${{ env.PAT_HELMCHART }}
           path: manifiestos
           persist-credentials: false
 
@@ -222,7 +222,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_PAGES_REPO }}
-          token: ${{ env.HELM_PAT }}
+          token: ${{ env.PAT_HELMCHART}}
           path: helm-chart
           ref: ${{ env.HELM_PAGES_BRANCH }}
           persist-credentials: false
