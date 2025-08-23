@@ -32,12 +32,9 @@ jobs:
       HELM_CHART_NAME: pedido-app
 
     steps:
-      # ====== Checkout de este repo (app-delivery) con PAT ======
+      # ====== Checkout de este repo (usar GITHUB_TOKEN por defecto) ======
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
-        with:
-          token: ${{ env.PAT_HELMCHART }}   # <- evita usar GITHUB_TOKEN implícito
-          persist-credentials: false
 
       # ====== Validación temprana del PAT ======
       - name: Validate PAT
@@ -45,7 +42,6 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::Secret PAT_HELMCHART vacío/no configurado"; exit 1; }
-          # Sanity check contra la API; 401/403 => PAT inválido o sin permisos
           curl -sSf -H "Authorization: Bearer ${PAT_HELMCHART}" https://api.github.com/user >/dev/null
 
       # ====== Herramientas ======
@@ -164,7 +160,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_MANIFESTS_REPO }}
-          token: ${{ env.PAT_HELMCHART }}   # <- usa el mismo PAT
+          token: ${{ env.PAT_HELMCHART }}
           path: manifiestos
           persist-credentials: false
 
@@ -232,7 +228,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_PAGES_REPO }}
-          token: ${{ env.PAT_HELMCHART }}  # <- usa el mismo PAT
+          token: ${{ env.PAT_HELMCHART }}
           path: helm-chart
           ref: ${{ env.HELM_PAGES_BRANCH }}
           persist-credentials: false
