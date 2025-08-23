@@ -21,7 +21,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # ====== Helm / repos ======
-      HELM_PAT: ${{ secrets.secretsPAT_HELMCHART }}       # PAT con RW a ambos repos
+      PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}       # PAT con RW a ambos repos
       HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
       HELM_PAGES_REPO: ritatrcr/helm-chart
       HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
