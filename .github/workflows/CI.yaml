@@ -35,7 +35,7 @@ jobs:
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract version tag
         id: vars
@@ -57,7 +57,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/monolito-inventario:${{ env.DOCKERHUB_VERSION }}
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/delivery-app:${{ env.DOCKERHUB_VERSION }}
 
       - name: Checkout manifests repo (chart fuente)
         uses: actions/checkout@v3
