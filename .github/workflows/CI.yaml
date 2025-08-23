@@ -23,8 +23,8 @@ jobs:
       HELM_PAGES_BRANCH: main  
 
       # Ruta/nombre por defecto del chart (se validará/auto-detectará)
-      HELM_CHART_DIR: charts/patrones
-      HELM_CHART_NAME: patrones
+      HELM_CHART_DIR: charts/pedido-app
+      HELM_CHART_NAME: pedido-app
 
     steps:
       # ====== Checkout del repo actual (código app + Dockerfile) ======
