@@ -131,7 +131,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:v{{ steps.vars.outputs.APP_VERSION }}
+            ${{ env.IMAGE_NAME }}:v${{ env.APP_VERSION }}
             ${{ env.IMAGE_NAME }}:${{ env.CI_TAG }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
