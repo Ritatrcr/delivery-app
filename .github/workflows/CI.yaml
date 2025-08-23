@@ -218,22 +218,32 @@ jobs:
           set -e
           REPO="${HELM_PAGES_REPO}"
           BRANCH="${HELM_PAGES_BRANCH:-main}"
+
           git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" helm-chart || {
             echo "::error::No pude clonar ${REPO}"; exit 1; }
           cd helm-chart
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
             git checkout "$BRANCH"
+            git fetch origin "$BRANCH" --depth=1 || true
+            git reset --hard "origin/$BRANCH" || true
+            git clean -fdx
           else
-            echo "Branch '$BRANCH' no existe; creándolo…"
+            echo "Branch '$BRANCH' no existe; creándola…"
             git checkout --orphan "$BRANCH"
             rm -rf *
             echo "# Helm Chart Repo" > README.md
-            git config user.name "github-actions"
-            git config user.email "github-actions@github.com"
             git add README.md
             git commit -m "chore: init $BRANCH"
             git push -u origin "$BRANCH"
           fi
+
+          echo "Remote actual:"
+          git remote -v
+
 
       - name: Copy packaged chart to helm-chart repo
         shell: bash
@@ -268,12 +278,11 @@ jobs:
 
       - name: Commit and push changes to helm-chart repo
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAT_HELMCHART }}
         run: |
           set -e
           cd helm-chart
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git pull --rebase || true
           git add .
           git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
-          git push origin "${HELM_PAGES_BRANCH:-main}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${HELM_PAGES_REPO}.git" "${HELM_PAGES_BRANCH:-main}"
