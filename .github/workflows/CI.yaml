@@ -105,11 +105,15 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "DOCKER_VERSION=v${APP_VERSION}" >> "$GITHUB_ENV"
-          # Puedes cambiar '+' por '.' si prefieres semver puro
-          echo "CHART_VERSION=${APP_VERSION}+${{ github.run_number }}" >> "$GITHUB_ENV"
+          : "${APP_VERSION:?APP_VERSION no está definido (ver paso Read app version)}"
+          DOCKER_VERSION="v${APP_VERSION}"
+          CHART_VERSION="${APP_VERSION}+${{ github.run_number }}"
+          # disponibles en este step
           echo "DOCKER_VERSION=$DOCKER_VERSION"
           echo "CHART_VERSION=$CHART_VERSION"
+          # y para los siguientes steps
+          echo "DOCKER_VERSION=$DOCKER_VERSION" >> "$GITHUB_ENV"
+          echo "CHART_VERSION=$CHART_VERSION"   >> "$GITHUB_ENV"
 
       # ====== BUILD & PUSH MULTI-ARCH ======
       - name: Build & Push image (multi-arch)
@@ -168,7 +172,7 @@ jobs:
             CHART_DIR="$CANDIDATE2"
           else
             echo "::error::No se encontró el chart en '$CANDIDATE1' ni en '$CANDIDATE2'"
-            ls -lah || true
+            echo "Estructura de 'manifiestos/':"
             ls -lah manifiestos || true
             exit 1
           fi
@@ -176,13 +180,18 @@ jobs:
           echo "CHART_DIR=$CHART_DIR" >> "$GITHUB_ENV"
           echo "Usando CHART_DIR=$CHART_DIR"
 
-      - name: Update Helm chart values.yaml image tag
+      - name: Lint Helm chart
+        shell: bash
+        run: |
+          set -euxo pipefail
+          helm lint "$CHART_DIR"
+
+      - name: Update Helm chart values.yaml (image repo & tag)
         shell: bash
         run: |
           set -euxo pipefail
           cd "$CHART_DIR"
-          # Aquí asumo que values.yaml tiene .image.repository y .image.tag para backend/frontend según tu plantilla.
-          # Si tu estructura es distinta, ajusta las claves.
+          # Ajusta estas claves si tu values.yaml usa otra estructura:
           yq eval ".image.repository = \"${IMAGE_NAME}\"" -i values.yaml
           yq eval ".image.tag = \"${DOCKER_VERSION}\"" -i values.yaml
           echo "values.yaml actualizado"
