@@ -213,3 +213,21 @@ jobs:
           git add -A
           git commit -m "chore: image ${IMAGE_NAME}:${DOCKER_VERSION} chart ${APP_VERSION}" || echo "No hay cambios"
           git push origin main || true
+
+
+      - name: Final sync (manifests -> origin/main)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd manifests
+          git fetch --prune origin main
+          git reset --hard origin/main
+          git log -1 --oneline
+
+      - name: Final sync (app repo -> origin/main)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git fetch --prune origin main
+          git reset --hard origin/main
+          git log -1 --oneline
