@@ -258,13 +258,19 @@ jobs:
           fi
           head -n 40 index.yaml
 
-      - name: Commit and push changes to helm-chart repo
+    
+
+      - name: Commit & push changes (to helm-chart repo)
         shell: bash
+        env:
+          PAT_USER: ritatrcr 
+          PAT_TOKEN: ${{ secrets.PAT_HELMCHART }}       # PAT con Contents: Read/Write
         run: |
           set -euxo pipefail
-          cd helm-chart
+          cd helm-pages
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
-          git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
+          git commit -m "Publish chart ${HELM_CHART_NAME} ${{ steps.pkg.outputs.CHART_VERSION }}" || echo "No commit needed"
+          git remote set-url origin "https://${PAT_USER}:${PAT_TOKEN}@github.com/${{ env.HELM_PAGES_REPO }}.git"
           git push origin "${HELM_PAGES_BRANCH}"
