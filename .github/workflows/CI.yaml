@@ -209,7 +209,7 @@ jobs:
           echo "CHART_PKG=$PKG" >> $GITHUB_ENV
           echo "Empaquetado: $PKG"
 
-      # ====== Preparar repo de Pages (crea rama si falta) ======
+      # ====== Preparar repo de Pages (crea rama si falta) =====
       - name: Prepare helm-chart repo (create branch if missing)
         shell: bash
         env:
