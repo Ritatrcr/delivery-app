@@ -259,5 +259,5 @@ jobs:
           git add -A
           git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
           # Fuerza remoto con PAT para evitar 403
-          git remote set-url origin "https://${PAT_USER}:${HELM_PAT}@github.com/${HELM_PAGES_REPO}.git"
+          git remote set-url origin "https://${PAT_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git"
           git push origin "${HELM_PAGES_BRANCH}"
