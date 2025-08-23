@@ -36,13 +36,30 @@ jobs:
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
 
-      # ====== Validación temprana del PAT ======
-      - name: Validate PAT
+      # ====== Validación temprana del PAT (contra los repos, no /user) ======
+      - name: Validate PAT (repo access)
         shell: bash
+        env:
+          GH_USER: ritatrcr
         run: |
           set -euo pipefail
           [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::Secret PAT_HELMCHART vacío/no configurado"; exit 1; }
-          curl -sSf -H "Authorization: Bearer ${PAT_HELMCHART}" https://api.github.com/user >/dev/null
+
+          check_repo () {
+            local REPO="$1"
+            echo "Comprobando acceso a https://github.com/${REPO} ..."
+            # HEAD es más robusto que chequear una rama específica
+            git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null 2>&1 || {
+              echo "::error::No hay acceso al repo ${REPO} con el PAT."
+              echo "Revisa: (1) token válido/no expirado, (2) permisos Contents: Read/Write,"
+              echo "(3) fine-grained con acceso explícito a ${REPO}, (4) SSO habilitado si aplica."
+              exit 1
+            }
+          }
+
+          check_repo "${HELM_MANIFESTS_REPO}"
+          check_repo "${HELM_PAGES_REPO}"
+          echo "PAT OK para ambos repos."
 
       # ====== Herramientas ======
       - name: Install Helm
