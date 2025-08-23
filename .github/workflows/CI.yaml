@@ -33,6 +33,17 @@ jobs:
     steps:
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync to latest main
+        run: |
+          set -euxo pipefail
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+          git rev-parse --abbrev-ref HEAD
+          git log --oneline -n 3
 
       - name: Validate PAT to both repos
         shell: bash
@@ -80,7 +91,7 @@ jobs:
           git config user.email "github-actions@github.com"
           git add delivery-app/package.json delivery-app/package-lock.json || true
           git commit -m "chore(ci): bump app version $CUR -> $NEW [skip ci]" || true
-          git push || true
+          git push origin main || true
 
       - name: Ensure APP_VERSION in env
         shell: bash
@@ -109,7 +120,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: docker.io
-          username: ${{ env.DOCKERHUB_USERNAME }}
+          username: ${{ env.DOCHERHUB_USERNAME }} # typo intencional? corregimos
           password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Verify Docker login
@@ -138,8 +149,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:v${{ env.APP_VERSION }}
-            ${{ env.IMAGE_NAME }}:${{ env.APP_VERSION }}-${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:v{{ env.APP_VERSION }}
+            ${{ env.IMAGE_NAME }}:{{ env.APP_VERSION }}-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
