@@ -86,6 +86,9 @@ jobs:
           echo "Logged in as: ${WHO}"
           [ "$WHO" = "ritatrcr" ] || { echo "::error::Estás logueado como '$WHO', debe ser 'ritatrcr'"; exit 1; }
 
+
+
+          
       # ====== LEE VERSIÓN DESDE package.json ======
       - name: Read app version
         id: vars
