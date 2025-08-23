@@ -86,9 +86,6 @@ jobs:
           echo "Logged in as: ${WHO}"
           [ "$WHO" = "ritatrcr" ] || { echo "::error::Estás logueado como '$WHO', debe ser 'ritatrcr'"; exit 1; }
 
-
-
-          
       # ====== LEE VERSIÓN DESDE package.json ======
       - name: Read app version
         id: vars
@@ -111,10 +108,8 @@ jobs:
           : "${APP_VERSION:?APP_VERSION no está definido (ver paso Read app version)}"
           DOCKER_VERSION="v${APP_VERSION}"
           CHART_VERSION="${APP_VERSION}+${{ github.run_number }}"
-          # disponibles en este step
           echo "DOCKER_VERSION=$DOCKER_VERSION"
           echo "CHART_VERSION=$CHART_VERSION"
-          # y para los siguientes steps
           echo "DOCKER_VERSION=$DOCKER_VERSION" >> "$GITHUB_ENV"
           echo "CHART_VERSION=$CHART_VERSION"   >> "$GITHUB_ENV"
 
@@ -160,6 +155,7 @@ jobs:
           repository: ${{ env.HELM_MANIFESTS_REPO }}
           token: ${{ env.HELM_PAT }}
           path: manifiestos
+          persist-credentials: false
 
       # ====== AUTODETECCIÓN DE RUTA DEL CHART ======
       - name: Detect chart directory
@@ -213,10 +209,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          # Empaqueta el chart en el workspace para facilitar la copia posterior
+          # Empaqueta el chart en el workspace
           helm package "$CHART_DIR" -d "$GITHUB_WORKSPACE"
           # Detecta el .tgz recién creado
-          PKG_PATH="$(ls -1t "$GITHUB_WORKSPACE"/*.tgz | head -n 1)"
+          PKG_PATH="$(ls -1t "$GITHUB_WORKSPACE/${HELM_CHART_NAME}-"*.tgz | head -n 1)"
           test -f "$PKG_PATH"
           echo "CHART_PKG=$PKG_PATH" >> "$GITHUB_ENV"
           echo "Empaquetado: $PKG_PATH"
@@ -229,6 +225,7 @@ jobs:
           token: ${{ env.HELM_PAT }}
           path: helm-chart
           ref: ${{ env.HELM_PAGES_BRANCH }}
+          persist-credentials: false
 
       - name: Copy packaged chart to helm-chart repo
         shell: bash
@@ -251,12 +248,16 @@ jobs:
 
       - name: Commit and push changes to helm-chart repo
         shell: bash
+        env:
+          PAT_USER: ritatrcr      # cambia si tu usuario es otro
         run: |
           set -euxo pipefail
           cd helm-chart
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git pull --rebase || true
-          git add .
+          git add -A
           git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
+          # Push con PAT para evitar 403
+          git remote set-url origin "https://${PAT_USER}:${HELM_PAT}@github.com/${HELM_PAGES_REPO}.git"
           git push origin "${HELM_PAGES_BRANCH}"
