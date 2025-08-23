@@ -22,7 +22,7 @@ jobs:
 
       # ====== Helm / repos ======
       PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}   # PAT con RW a ambos repos
-      GH_USER: ritatrcr                              # dueño del PAT y de los repos destino/origen
+      GH_USER: ritatrcr
       HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
       HELM_PAGES_REPO: ritatrcr/helm-chart
       HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
@@ -37,13 +37,12 @@ jobs:
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
 
-      # ====== Validación temprana del PAT (y acceso a ambos repos) ======
+      # ====== Validación temprana del PAT (contra repos) ======
       - name: Validate PAT to both repos
         shell: bash
         run: |
           set -euo pipefail
           [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::Secret PAT_HELMCHART vacío/no configurado"; exit 1; }
-
           for REPO in "${HELM_MANIFESTS_REPO}" "${HELM_PAGES_REPO}"; do
             echo "Comprobando acceso a https://github.com/${REPO} ..."
             git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null 2>&1 \
@@ -162,7 +161,7 @@ jobs:
           echo "  - $IMAGE_NAME:v${APP_VERSION}"
           echo "  - $IMAGE_NAME:${CI_TAG}"
 
-      # ====== CLONE MANIFIESTOS (manual con git+PAT, evita REST del checkout) ======
+      # ====== CLONE MANIFIESTOS (manual con git+PAT) ======
       - name: Clone manifests repo (manual)
         shell: bash
         run: |
@@ -227,7 +226,6 @@ jobs:
           test -f "$PKG_PATH"
           echo "CHART_PKG=$PKG_PATH" >> "$GITHUB_ENV"
           echo "Empaquetado: $PKG_PATH"
-          # Verifica que incluya values-dev/prod si los usas
           tar -tzf "$PKG_PATH" | grep -E 'values-(dev|prod)\.yaml' || true
 
       # ====== CLONE helm-chart (manual con git+PAT) ======
@@ -258,19 +256,18 @@ jobs:
           fi
           head -n 40 index.yaml
 
-    
-
+      # ====== PUSH AL REPO DE PAGES (usa helm-chart, no helm-pages) ======
       - name: Commit & push changes (to helm-chart repo)
         shell: bash
         env:
-          PAT_USER: ritatrcr 
-          PAT_TOKEN: ${{ secrets.PAT_HELMCHART }}       # PAT con Contents: Read/Write
+          PAT_USER: ritatrcr
         run: |
           set -euxo pipefail
-          cd helm-pages
+          cd helm-chart
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
+          git fetch origin "${HELM_PAGES_BRANCH}" || true
+          git pull --rebase origin "${HELM_PAGES_BRANCH}" || true
           git add -A
-          git commit -m "Publish chart ${HELM_CHART_NAME} ${{ steps.pkg.outputs.CHART_VERSION }}" || echo "No commit needed"
-          git remote set-url origin "https://${PAT_USER}:${PAT_TOKEN}@github.com/${{ env.HELM_PAGES_REPO }}.git"
+          git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
           git push origin "${HELM_PAGES_BRANCH}"
