@@ -242,17 +242,29 @@ jobs:
           cp "${CHART_PKG}" helm-chart/
           ls -lah helm-chart
 
-      - name: Update Helm repo index (merge)
+      - name: Update Helm repo index (safe merge)
         shell: bash
         run: |
           set -e
           cd helm-chart
-          if [ -f index.yaml ]; then
-            helm repo index . --url "${HELM_REPO_URL}" --merge index.yaml
+
+          # ¿Hay index.yaml y tiene contenido (>0 bytes)?
+          if [ -s index.yaml ]; then
+            echo "index.yaml encontrado. Intentando merge…"
+            if ! helm repo index . --url "${HELM_REPO_URL}" --merge index.yaml; then
+              echo "Merge falló. Respaldo y regenero index.yaml desde cero."
+              mv index.yaml "index.yaml.bak.$(date +%s)"
+              helm repo index . --url "${HELM_REPO_URL}"
+            fi
           else
+            echo "index.yaml ausente o vacío. Generando uno nuevo…"
+            rm -f index.yaml || true
             helm repo index . --url "${HELM_REPO_URL}"
           fi
-          head -n 40 index.yaml
+
+          echo "Primeras líneas del index.yaml resultante:"
+          head -n 40 index.yaml || true
+
 
       - name: Commit and push changes to helm-chart repo
         shell: bash
