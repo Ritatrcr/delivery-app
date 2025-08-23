@@ -10,6 +10,9 @@ concurrency:
   group: build-push-helm
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build_and_update:
     runs-on: ubuntu-latest
@@ -37,11 +40,9 @@ jobs:
           set -euo pipefail
           [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::Secret PAT_HELMCHART vacío/no configurado"; exit 1; }
           for REPO in "${HELM_MANIFESTS_REPO}" "${HELM_PAGES_REPO}"; do
-            echo "Comprobando acceso a https://github.com/${REPO} ..."
             git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null 2>&1 \
-              || { echo "::error::Sin acceso al repo ${REPO} con el PAT (Contents:RW / repo seleccionado / SSO)."; exit 1; }
+              || { echo "::error::Sin acceso al repo ${REPO} con el PAT"; exit 1; }
           done
-          echo "PAT OK para ambos repos."
 
       - name: Install Helm
         uses: azure/setup-helm@v4
@@ -62,8 +63,31 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          test -f delivery-app/package.json || (echo "Falta delivery-app/package.json" && exit 1)
-          test -f delivery-app/package-lock.json || (echo "Falta delivery-app/package-lock.json" && exit 1)
+          test -f delivery-app/package.json
+          test -f delivery-app/package-lock.json || true
+
+      - name: Bump app version (patch) and commit [skip ci]
+        shell: bash
+        working-directory: ./delivery-app
+        run: |
+          set -euxo pipefail
+          CUR=$(node -e "console.log(require('./package.json').version)")
+          npm version patch --no-git-tag-version
+          NEW=$(node -e "console.log(require('./package.json').version)")
+          echo "APP_VERSION=$NEW" >> "$GITHUB_ENV"
+          cd ..
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add delivery-app/package.json delivery-app/package-lock.json || true
+          git commit -m "chore(ci): bump app version $CUR -> $NEW [skip ci]" || true
+          git push || true
+
+      - name: Ensure APP_VERSION in env
+        shell: bash
+        working-directory: ./delivery-app
+        run: |
+          set -euxo pipefail
+          [ -n "${APP_VERSION:-}" ] || echo "APP_VERSION=$(node -e "console.log(require('./package.json').version)")" >> "$GITHUB_ENV"
 
       - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
@@ -75,10 +99,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          [ -n "${DOCKERHUB_USERNAME}" ] || { echo "::error::Missing DOCKERHUB_USERNAME secret"; exit 1; }
-          [ -n "${DOCKERHUB_TOKEN}" ]    || { echo "::error::Missing DOCKERHUB_TOKEN secret"; exit 1; }
+          [ -n "${DOCKERHUB_USERNAME}" ]
+          [ -n "${DOCKERHUB_TOKEN}" ]
 
-      - name: Logout any previous registry sessions (safety)
+      - name: Logout any previous registry sessions
         run: docker logout || true
 
       - name: Login to Docker Hub
@@ -88,37 +112,20 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
-      - name: Verify Docker login (must be ritatrcr)
+      - name: Verify Docker login
         shell: bash
         run: |
           set -euxo pipefail
           WHO=$(docker info 2>/dev/null | awk -F': ' '/^ Username:/ {print $2}')
-          echo "Logged in as: ${WHO}"
-          [ "$WHO" = "ritatrcr" ] || { echo "::error::Estás logueado como '$WHO', debe ser 'ritatrcr'"; exit 1; }
-
-      - name: Read app version
-        id: vars
-        shell: bash
-        working-directory: ./delivery-app
-        run: |
-          set -euxo pipefail
-          APP_VERSION=$(node -e "console.log(require('./package.json').version || '0.0.0')")
-          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_OUTPUT"
-          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
-          SHORT_SHA="${GITHUB_SHA::7}"
-          CI_TAG="ci-${{ github.run_number }}-${SHORT_SHA}"
-          echo "CI_TAG=$CI_TAG" >> "$GITHUB_ENV"
-          echo "Using APP_VERSION=$APP_VERSION CI_TAG=$CI_TAG"
+          [ "$WHO" = "ritatrcr" ] || { echo "::error::Logged in as '$WHO'"; exit 1; }
 
       - name: Compute release vars (docker & chart)
         shell: bash
         run: |
           set -euxo pipefail
-          : "${APP_VERSION:?APP_VERSION no está definido (ver paso Read app version)}"
+          : "${APP_VERSION:?APP_VERSION no está definido}"
           DOCKER_VERSION="v${APP_VERSION}"
           CHART_VERSION="${APP_VERSION}+${{ github.run_number }}"
-          echo "DOCKER_VERSION=$DOCKER_VERSION"
-          echo "CHART_VERSION=$CHART_VERSION"
           echo "DOCKER_VERSION=$DOCKER_VERSION" >> "$GITHUB_ENV"
           echo "CHART_VERSION=$CHART_VERSION"   >> "$GITHUB_ENV"
 
@@ -132,7 +139,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:v${{ env.APP_VERSION }}
-            ${{ env.IMAGE_NAME }}:${{ env.CI_TAG }}
+            ${{ env.IMAGE_NAME }}:${{ env.APP_VERSION }}-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -143,12 +150,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "Pushed:"
-          echo "  - $IMAGE_NAME:latest"
-          echo "  - $IMAGE_NAME:v${APP_VERSION}"
-          echo "  - $IMAGE_NAME:${CI_TAG}"
+          echo "$IMAGE_NAME:latest"
+          echo "$IMAGE_NAME:v${APP_VERSION}"
+          echo "$IMAGE_NAME:${APP_VERSION}-${GITHUB_SHA}"
 
-      - name: Checkout manifests repo (ritatrcr/manifiestos-delivery-app)
+      - name: Checkout manifests repo
         uses: actions/checkout@v4
         with:
           repository: ${{ env.HELM_MANIFESTS_REPO }}
@@ -163,7 +169,7 @@ jobs:
           cd manifests
           git remote -v
 
-      - name: Update values-dev/prod with new Docker tag and Chart.yaml version
+      - name: Update values-dev/prod and Chart.yaml, push
         shell: bash
         env:
           GIT_USER: ritatrcr
@@ -172,49 +178,26 @@ jobs:
           set -euo pipefail
           cd manifests
           git remote set-url origin "https://${GIT_USER}:${PAT}@github.com/${HELM_MANIFESTS_REPO}.git"
-          echo "Usando IMAGE_NAME=${IMAGE_NAME}"
-          echo "Usando APP_VERSION=${APP_VERSION}"
-          echo "Usando DOCKER_VERSION=${DOCKER_VERSION}"
+          DOCKER_VERSION="v${APP_VERSION}"
           bump_images () {
             local file="$1"
-            echo "Actualizando $file"
+            [ -f "$file" ] || { echo "Skip $file"; return 0; }
             yq -i '
-              (.app.image.repository |= env(IMAGE_NAME)) |
-              (.app.image.tag        |= env(DOCKER_VERSION))
-            ' "$file" || true
-            yq -i '
-              (.backend.image.repository |= env(IMAGE_NAME)) |
-              (.backend.image.tag        |= env(DOCKER_VERSION)) |
+              (.app.image.repository      |= env(IMAGE_NAME)) |
+              (.app.image.tag             |= env(DOCKER_VERSION)) |
+              (.backend.image.repository  |= env(IMAGE_NAME)) |
+              (.backend.image.tag         |= env(DOCKER_VERSION)) |
               (.frontend.image.repository |= env(IMAGE_NAME)) |
               (.frontend.image.tag        |= env(DOCKER_VERSION))
             ' "$file" || true
           }
-          for f in \
-            "${HELM_CHART_DIR}/values-dev.yaml" \
-            "${HELM_CHART_DIR}/values-prod.yaml"
-          do
-            [ -f "$f" ] && bump_images "$f" || echo "Archivo no encontrado (ok): $f"
-          done
+          bump_images "${HELM_CHART_DIR}/values-dev.yaml"
+          bump_images "${HELM_CHART_DIR}/values-prod.yaml"
           if [ -f "${HELM_CHART_DIR}/Chart.yaml" ]; then
             yq -i ".version = strenv(APP_VERSION)" "${HELM_CHART_DIR}/Chart.yaml"
-          else
-            echo "No existe Chart.yaml en ${HELM_CHART_DIR} (no se actualiza versión)."
           fi
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
-          git commit -m "chore: set image ${IMAGE_NAME}:${DOCKER_VERSION} and chart version ${APP_VERSION}" || echo "No hay cambios que commitear"
-          git push origin main
-
-      - name: Debug env vars
-        run: |
-          echo "IMAGE_NAME=$IMAGE_NAME"
-          echo "DOCKERHUB_USERNAME=$DOCKERHUB_USERNAME"
-          echo "HELM_MANIFESTS_REPO=$HELM_MANIFESTS_REPO"
-          echo "HELM_PAGES_REPO=$HELM_PAGES_REPO"
-          echo "GH_USER=$GH_USER"
-
-      - name: Debug secrets presence
-        run: |
-          echo "PAT_HELMCHART length: ${#PAT_HELMCHART}"
-          echo "DOCKERHUB_TOKEN length: ${#DOCKERHUB_TOKEN}"
+          git commit -m "chore: image ${IMAGE_NAME}:${DOCKER_VERSION} chart ${APP_VERSION}" || echo "No hay cambios"
+          git push origin main || true
