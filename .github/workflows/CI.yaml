@@ -20,7 +20,7 @@ jobs:
       HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
       HELM_PAGES_REPO: ritatrcr/helm-chart
       HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
-      HELM_PAGES_BRANCH: main   # <-- cámbiala a gh-pages si quieres
+      HELM_PAGES_BRANCH: main  
 
       # Ruta/nombre por defecto del chart (se validará/auto-detectará)
       HELM_CHART_DIR: charts/patrones
