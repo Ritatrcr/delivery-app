@@ -238,3 +238,16 @@ jobs:
           git add -A
           git commit -m "chore: set image ${IMAGE_NAME}:${DOCKER_VERSION} and chart version ${APP_VERSION}" || echo "No hay cambios que commitear"
           git push origin main
+
+      - name: Debug env vars
+        run: |
+          echo "IMAGE_NAME=$IMAGE_NAME"
+          echo "DOCKERHUB_USERNAME=$DOCKERHUB_USERNAME"
+          echo "HELM_MANIFESTS_REPO=$HELM_MANIFESTS_REPO"
+          echo "HELM_PAGES_REPO=$HELM_PAGES_REPO"
+          echo "GH_USER=$GH_USER"
+
+      - name: Debug secrets presence
+        run: |
+          echo "PAT_HELMCHART length: ${#PAT_HELMCHART}"
+          echo "DOCKERHUB_TOKEN length: ${#DOCKERHUB_TOKEN}"
