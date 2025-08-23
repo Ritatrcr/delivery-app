@@ -169,7 +169,6 @@ jobs:
           ref: main
           path: manifests
           token: ${{ secrets.PAT_HELMCHART }}
-          persist-credentials: false
 
       - name: Verify git remote (manifests)
         shell: bash
@@ -182,7 +181,7 @@ jobs:
       - name: Update values-dev/prod with new Docker tag and (optionally) Chart.yaml version
         shell: bash
         env:
-          GIT_USER: ${{ env.GH_USER }}
+          GIT_USER: ritatrcr
           PAT: ${{ secrets.PAT_HELMCHART }}
         run: |
           set -euo pipefail
