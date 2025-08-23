@@ -1,126 +1,288 @@
-name: Build & Publish Helm Chart to Pages
+name: Build & Push Docker (Helm publish)
 
 on:
   push:
-    branches: [ "main" ]
-    tags: [ "v*" ]     # también corre al crear tags vX.Y.Z
-  workflow_dispatch: {}
-
-concurrency:
-  group: publish-helm
-  cancel-in-progress: true
-
-env:
-  GH_USER: Ritatrcr
-  MANIFESTS_REPO: manifiestos-delivery-app    # chart fuente
-  CHART_REPO: helm-chart                      # repo de Pages
-  CHART_PATH: charts/pedido-app               # ruta del chart dentro de MANIFESTS_REPO
-  PAGES_URL: https://Ritatrcr.github.io/helm-chart
+    branches:
+      - main
 
 jobs:
-  publish-helm:
+  build_and_push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+
+    env:
+      # ====== Docker image ======
+      IMAGE_NAME: ritatrcr/delivery-app
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ====== Helm / repos ======
+      HELM_PAT: ${{ secrets.PAT_HELMCHART }}              # PAT con RW a ambos repos
+      HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
+      HELM_PAGES_REPO: ritatrcr/helm-chart
+      HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
+      HELM_PAGES_BRANCH: main  
+
+      # Ruta/nombre por defecto del chart (se validará/auto-detectará)
+      HELM_CHART_DIR: charts/patrones
+      HELM_CHART_NAME: patrones
+
     steps:
-      # 1) Repo que dispara el flujo (delivery-app)
-      - name: Checkout (delivery-app)
+      # ====== Checkout del repo actual (código app + Dockerfile) ======
+      - name: Checkout main repo
         uses: actions/checkout@v4
 
-      - name: Setup Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.15.2
-
-      - name: Setup yq
-        uses: mikefarah/yq@v4.44.3
-        with:
-          cmd: --version
-
-      # 2) Calcular versión de chart
-      - name: Compute chart version
-        id: ver
+      # ---- Verifica que la app esté en delivery-app/ ----
+      - name: Assert Node files exist
         shell: bash
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          set -e
+          test -f delivery-app/package.json || (echo "Falta delivery-app/package.json" && exit 1)
+          test -f delivery-app/package-lock.json || (echo "Falta delivery-app/package-lock.json" && exit 1)
+
+      # ====== Docker multi-arch build ======
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ====== LOGIN A DOCKER HUB (forzado y validado) ======
+      - name: Validate DockerHub secrets
+        shell: bash
+        run: |
+          set -e
+          [ -n "${DOCKERHUB_USERNAME}" ] || { echo "::error::Missing DOCKERHUB_USERNAME secret"; exit 1; }
+          [ -n "${DOCKERHUB_TOKEN}" ]    || { echo "::error::Missing DOCKERHUB_TOKEN secret"; exit 1; }
+
+      - name: Logout any previous registry sessions (safety)
+        run: docker logout || true
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify Docker login (must be ritatrcr)
+        shell: bash
+        run: |
+          set -e
+          WHO=$(docker info 2>/dev/null | awk -F': ' '/^ Username:/ {print $2}')
+          echo "Logged in as: ${WHO}"
+          [ "$WHO" = "ritatrcr" ] || { echo "::error::Estás logueado como '$WHO', debe ser 'ritatrcr'"; exit 1; }
+
+      # ====== LEE VERSIÓN DESDE package.json ======
+      - name: Read app version
+        id: vars
+        shell: bash
+        working-directory: ./delivery-app
+        run: |
+          set -e
+          APP_VERSION=$(node -e "console.log(require('./package.json').version || '0.0.0')")
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          CI_TAG="ci-${{ github.run_number }}-${SHORT_SHA}"
+          echo "CI_TAG=$CI_TAG" >> "$GITHUB_ENV"
+          echo "Using APP_VERSION=$APP_VERSION CI_TAG=$CI_TAG"
+
+      - name: Compute release vars (docker & chart)
+        shell: bash
+        run: |
+          set -e
+          echo "DOCKER_VERSION=v${APP_VERSION}" >> "$GITHUB_ENV"
+          # Puedes cambiar '+' por '.' si prefieres semver puro
+          echo "CHART_VERSION=${APP_VERSION}+${{ github.run_number }}" >> "$GITHUB_ENV"
+          echo "DOCKER_VERSION=$DOCKER_VERSION"
+          echo "CHART_VERSION=$CHART_VERSION"
+
+      # ====== BUILD & PUSH MULTI-ARCH ======
+      - name: Build & Push image (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          # Dockerfile en la raíz que copia desde ./delivery-app
+          # Si tu Dockerfile vive en delivery-app/, ajusta:
+          #   context: ./delivery-app
+          #   file: ./delivery-app/Dockerfile
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:v${{ steps.vars.outputs.APP_VERSION }}
+            ${{ env.IMAGE_NAME }}:${{ env.CI_TAG }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Show pushed tags
+        shell: bash
+        run: |
+          echo "Pushed:"
+          echo "  - $IMAGE_NAME:latest"
+          echo "  - $IMAGE_NAME:v${APP_VERSION}"
+          echo "  - $IMAGE_NAME:${CI_TAG}"
+
+      - name: Inspect image manifest (optional)
+        continue-on-error: true
+        shell: bash
+        run: docker buildx imagetools inspect "$IMAGE_NAME:latest" || true
+
+      # ====== HELM: checkout de manifiestos (chart fuente) ======
+      - name: Checkout manifests repo (chart fuente)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HELM_MANIFESTS_REPO }}
+          token: ${{ secrets.PAT_HELMCHART }}
+          path: manifiestos
+
+      # ====== Instalar Helm & yq ======
+      - name: Set up Helm CLI
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.4
+
+      - name: Install yq
+        shell: bash
+        run: |
+          set -e
+          sudo curl -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      # ====== Diagnóstico de rutas y localización del chart ======
+      - name: Debug listing (manifiestos)
+        shell: bash
+        run: |
+          set -e
+          echo "Contenido de 'manifiestos' (nivel 2):"
+          find manifiestos -maxdepth 2 -type d -print
+
+      - name: Locate chart dir
+        shell: bash
+        run: |
+          set -e
+          CAND="manifiestos/${HELM_CHART_DIR:-charts/patrones}"
+          if [ -f "$CAND/Chart.yaml" ]; then
+            CHART_DIR="$CAND"
           else
-            echo "version=$(date +%Y.%m.%d)-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+            echo "No se encontró Chart.yaml en $CAND. Escaneando..."
+            CHART_DIR="$(find manifiestos -maxdepth 3 -type f -name Chart.yaml -print | head -n 1 | xargs -I{} dirname {} || true)"
           fi
-          echo "shortsha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          [ -n "$CHART_DIR" ] && [ -f "$CHART_DIR/Chart.yaml" ] || { echo "::error::No se encontró Chart.yaml en 'manifiestos'"; exit 1; }
+          echo "CHART_DIR=$CHART_DIR" >> "$GITHUB_ENV"
+          echo "Usando CHART_DIR=$CHART_DIR"
 
-      # 3) Clonar repo con el chart fuente (manifiestos)
-      - name: Checkout manifests repo (read-only)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.GH_USER }}/${{ env.MANIFESTS_REPO }}
-          path: manifests
-          token: ${{ secrets.GH_PAT }}   # PAT con scope repo
-
-      # (OPCIONAL) Bump de versión/tag dentro del chart (no se push-ea a manifiestos)
-      - name: Bump chart version and image tag (no-push)
-        working-directory: manifests/${{ env.CHART_PATH }}
+      # ====== Actualiza metadatos del Chart y tag de imagen ======
+      - name: Update Chart metadata & image tag
+        shell: bash
         run: |
-          # Asegura version en Chart.yaml
-          yq -i '.version = "${{ steps.ver.outputs.version }}"' Chart.yaml || true
-          # Si tus values usan esta clave, propaga tag de imagen
-          for f in values.yaml values-dev.yaml values-prod.yaml; do
-            [ -f "$f" ] && yq -i '.app.image.tag = "${{ steps.ver.outputs.shortsha }}"' "$f" || true
-          done
+          set -e
+          cd "$CHART_DIR"
 
-      # 4) Resolver dependencias del chart
-      - name: Helm dependency update
-        working-directory: manifests/${{ env.CHART_PATH }}
+          # Garantiza campos mínimos requeridos
+          yq eval ".apiVersion = (.apiVersion // \"v2\")" -i Chart.yaml
+          yq eval ".name = (.name // \"${HELM_CHART_NAME}\")" -i Chart.yaml
+          yq eval ".version = \"${CHART_VERSION}\"" -i Chart.yaml
+          yq eval ".appVersion = \"${APP_VERSION}\"" -i Chart.yaml
+
+          # Actualiza tag de imagen en values.yaml (ajusta ruta si difiere en tu values)
+          yq eval ".image.tag = \"${DOCKER_VERSION}\"" -i values.yaml
+
+          echo "=== Chart.yaml ==="
+          cat Chart.yaml
+          echo "=== values.yaml (primeras líneas) ==="
+          head -n 60 values.yaml || true
+
+      # ====== Empaqueta el chart ======
+      - name: Package Helm Chart
+        shell: bash
         run: |
-          helm repo add bitnami https://charts.bitnami.com/bitnami
-          helm dependency update
+          set -e
+          helm package "$CHART_DIR" --destination manifiestos
+          PKG="$(ls -1t manifiestos/*.tgz | head -n 1)"
+          [ -n "$PKG" ] || { echo "::error::No se generó el paquete .tgz"; exit 1; }
+          echo "CHART_PKG=$PKG" >> $GITHUB_ENV
+          echo "Empaquetado: $PKG"
 
-      # 5) Empaquetar chart -> .tgz
-      - name: Package chart
+      # ====== Preparar repo de Pages (crea rama si falta) ======
+      - name: Prepare helm-chart repo (create branch if missing)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAT_HELMCHART }}
         run: |
-          mkdir -p packaged
-          helm package "manifests/${{ env.CHART_PATH }}" -d packaged
-          ls -l packaged
-          echo "PKG=$(ls packaged/*.tgz)" >> $GITHUB_ENV
+          set -e
+          REPO="${HELM_PAGES_REPO}"
+          BRANCH="${HELM_PAGES_BRANCH:-main}"
 
-      # 6) Clonar repo de Pages y asegurar rama gh-pages
-      - name: Checkout helm-chart (default branch)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.GH_USER }}/${{ env.CHART_REPO }}
-          path: charts-publish
-          token: ${{ secrets.GH_PAT }}
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" helm-chart || {
+            echo "::error::No pude clonar ${REPO}"; exit 1; }
+          cd helm-chart
 
-      - name: Ensure gh-pages branch
-        working-directory: charts-publish
-        run: |
-          git fetch origin gh-pages || true
-          if git rev-parse --verify origin/gh-pages >/dev/null 2>&1; then
-            git checkout gh-pages
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git checkout "$BRANCH"
+            git fetch origin "$BRANCH" --depth=1 || true
+            git reset --hard "origin/$BRANCH" || true
+            git clean -fdx
           else
-            git checkout --orphan gh-pages
-            rm -rf .
+            echo "Branch '$BRANCH' no existe; creándola…"
+            git checkout --orphan "$BRANCH"
+            rm -rf *
             echo "# Helm Chart Repo" > README.md
-            touch .nojekyll
-            git add .
-            git -c user.name="github-actions" -c user.email="actions@github.com" commit -m "init gh-pages"
+            git add README.md
+            git commit -m "chore: init $BRANCH"
+            git push -u origin "$BRANCH"
           fi
 
-      # 7) Copiar .tgz y regenerar index.yaml (merge si existe)
-      - name: Add tgz and rebuild index.yaml
-        working-directory: charts-publish
+          echo "Remote actual:"
+          git remote -v
+
+
+      - name: Copy packaged chart to helm-chart repo
+        shell: bash
         run: |
-          cp -v "${PKG}" .
-          touch .nojekyll
-          if [ -f index.yaml ]; then
-            helm repo index . --url "${{ env.PAGES_URL }}" --merge index.yaml
-          else
-            helm repo index . --url "${{ env.PAGES_URL }}"
-          fi
-          git add .
-          git -c user.name="github-actions" -c user.email="actions@github.com" commit -m "Publish chart ${{ steps.ver.outputs.version }}" || echo "No changes"
+          set -e
+          cp "${CHART_PKG}" helm-chart/
+          ls -lah helm-chart
 
-      # 8) Push a gh-pages
-      - name: Push to gh-pages
-        working-directory: charts-publish
-        run: git push origin gh-pages
+      - name: Update Helm repo index (safe merge)
+        shell: bash
+        run: |
+          set -e
+          cd helm-chart
+
+          # ¿Hay index.yaml y tiene contenido (>0 bytes)?
+          if [ -s index.yaml ]; then
+            echo "index.yaml encontrado. Intentando merge…"
+            if ! helm repo index . --url "${HELM_REPO_URL}" --merge index.yaml; then
+              echo "Merge falló. Respaldo y regenero index.yaml desde cero."
+              mv index.yaml "index.yaml.bak.$(date +%s)"
+              helm repo index . --url "${HELM_REPO_URL}"
+            fi
+          else
+            echo "index.yaml ausente o vacío. Generando uno nuevo…"
+            rm -f index.yaml || true
+            helm repo index . --url "${HELM_REPO_URL}"
+          fi
+
+          echo "Primeras líneas del index.yaml resultante:"
+          head -n 40 index.yaml || true
+
+
+      - name: Commit and push changes to helm-chart repo
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAT_HELMCHART }}
+        run: |
+          set -e
+          cd helm-chart
+          git add .
+          git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${HELM_PAGES_REPO}.git" "${HELM_PAGES_BRANCH:-main}"
