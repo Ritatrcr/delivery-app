@@ -94,7 +94,7 @@ jobs:
       - name: Checkout helm-chart repo (GitHub Pages)
         uses: actions/checkout@v3
         with:
-          repository: JuanGomePer/helm-chart
+          repository: ritatrcr/helm-chart
           token: ${{ secrets.PAT_HELMCHART }}
           path: helm-chart
 
@@ -111,9 +111,9 @@ jobs:
           set -e
           cd helm-chart
           if [ -f index.yaml ]; then
-            helm repo index . --url https://juangomeper.github.io/helm-chart/ --merge index.yaml
+            helm repo index . --url https://ritatrcr.github.io/helm-chart/ --merge index.yaml
           else
-            helm repo index . --url https://juangomeper.github.io/helm-chart/
+            helm repo index . --url https://ritatrcr.github.io/helm-chart/
           fi
           cat index.yaml | head -n 40
 
