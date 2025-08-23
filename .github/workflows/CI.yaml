@@ -14,13 +14,12 @@ jobs:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ====== VARIABLES (comentadas) PARA HELM ======
-      # HELM_PAT: ${{ secrets.PAT_HELMCHART }}                         # PAT GitHub con RW
-      # HELM_MANIFESTS_REPO: tuUsuario/tu-repo-manifiestos             # Repo del chart fuente
-      # HELM_PAGES_REPO:    tuUsuario/helm-chart                       # Repo GitHub Pages (index.yaml)
-      # HELM_CHART_DIR:     charts/delivery-app                        # Carpeta del chart
-      # HELM_CHART_NAME:    delivery-app                               # Nombre del chart
-      # HELM_REPO_URL:      https://tuUsuario.github.io/helm-chart/    # URL pública de charts
+      HELM_PAT: ${{ secrets.PAT_HELMCHART }}             # token con permisos RW a ambos repos
+      HELM_MANIFESTS_REPO: ${{ github.repository }}      # repo actual donde vive el chart
+      HELM_PAGES_REPO: ritatrcr/helm-chart               # repo GitHub Pages donde publicas charts
+      HELM_CHART_DIR: charts/delivery-app
+      HELM_CHART_NAME: delivery-app
+      HELM_REPO_URL: https://ritatrcr.github.io/helm-app-delivery/
 
     steps:
       - name: Checkout main repo
@@ -117,95 +116,76 @@ jobs:
         shell: bash
         run: docker buildx imagetools inspect "$IMAGE_NAME:latest" || true
 
-      #     HELM (COMENTADO)
-      # =======================
-      # - name: Install Helm
-      #   uses: azure/setup-helm@v4
-      #   with:
-      #     version: v3.14.4
-      #
-      # - name: Install yq
-      #   shell: bash
-      #   run: |
-      #     set -e
-      #     YQ_VERSION=v4.44.3
-      #     sudo wget -qO /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-      #     sudo chmod +x /usr/local/bin/yq
-      #     yq --version
-      #     helm version
-      #
-      # - name: Checkout manifests repo (chart fuente)
-      #   uses: actions/checkout@v4
-      #   with:
-      #     repository: ${{ env.HELM_MANIFESTS_REPO }}
-      #     token: ${{ env.HELM_PAT }}
-      #     path: manifiestos
-      #
-      # - name: Update values.yaml (imagen y tag)
-      #   shell: bash
-      #   run: |
-      #     set -e
-      #     cd "manifiestos/${HELM_CHART_DIR}"
-      #     yq eval ".image.repository = \"${IMAGE_NAME}\"" -i values.yaml
-      #     yq eval ".image.tag = \"${APP_VERSION}\"" -i values.yaml
-      #
-      # - name: Update Chart.yaml (versiones del chart)
-      #   shell: bash
-      #   run: |
-      #     set -e
-      #     cd "manifiestos/${HELM_CHART_DIR}"
-      #     yq eval ".version = \"${APP_VERSION}\"" -i Chart.yaml
-      #     yq eval ".appVersion = \"${APP_VERSION}\"" -i Chart.yaml
-      #
-      # - name: Package Helm Chart
-      #   shell: bash
-      #   run: |
-      #     set -e
-      #     cd manifiestos
-      #     helm package "${HELM_CHART_DIR}"
-      #     PKG="$(ls -1 ${HELM_CHART_NAME}-*.tgz | tail -n 1)"
-      #     echo "CHART_PKG=$PKG" >> $GITHUB_ENV
-      #     echo "Empaquetado: $PKG"
-      #
-      # - name: Checkout helm-chart repo (GitHub Pages)
-      #   uses: actions/checkout@v4
-      #   with:
-      #     repository: ${{ env.HELM_PAGES_REPO }}
-      #     token: ${{ env.HELM_PAT }}
-      #     path: helm-chart
-      #
-      # - name: Copy packaged chart to helm-chart repo
-      #   shell: bash
-      #   run: |
-      #     set -e
-      #     cp "manifiestos/${{ env.CHART_PKG }}" helm-chart/
-      #     ls -lah helm-chart
-      #
-      # - name: Update Helm repo index (merge)
-      #   shell: bash
-      #   run: |
-      #     set -e
-      #     cd helm-chart
-      #     if [ -f index.yaml ]; then
-      #       helm repo index . --url "${HELM_REPO_URL}" --merge index.yaml
-      #     else
-      #       helm repo index . --url "${HELM_REPO_URL}"
-      #     fi
-      #     head -n 40 index.yaml
-      #
-      # - name: Commit and push charts to helm-chart repo
-      #   shell: bash
-      #   run: |
-      #     set -e
-      #     cd helm-chart
-      #     git config user.name "github-actions"
-      #     git config user.email "github-actions@github.com"
-      #     git pull --rebase || true
-      #     git add .
-      #     git commit -m "Publish chart ${HELM_CHART_NAME} ${APP_VERSION}" || echo "No commit needed"
-      #     git push origin main
 
 
 
 
+      - name: Checkout manifests repo (chart fuente)
+        uses: actions/checkout@v3
+        with:
+          repository: ritatrcr/manifiestos-delivery-app
+          token: ${{ secrets.PAT_HELMCHART }}
+          path: manifiestos
 
+      - name: Update Helm chart values.yaml image tag
+        shell: bash
+        run: |
+          set -e
+          cd manifiestos/charts/patrones
+          yq eval ".image.tag = \"${DOCKER_VERSION}\"" -i values.yaml
+
+      - name: Update Chart version in Chart.yaml
+        shell: bash
+        run: |
+          set -e
+          cd manifiestos/charts/patrones
+          yq eval ".version = \"${CHART_VERSION}\"" -i Chart.yaml
+          yq eval ".appVersion = \"${APP_VERSION}\"" -i Chart.yaml
+
+      - name: Package Helm Chart
+        shell: bash
+        run: |
+          set -e
+          cd manifiestos
+          helm package charts/patrones
+          PKG="$(ls -1 patrones-*.tgz | tail -n 1)"
+          echo "CHART_PKG=$PKG" >> $GITHUB_ENV
+          echo "Empaquetado: $PKG"
+
+      - name: Checkout helm-chart repo (GitHub Pages)
+        uses: actions/checkout@v3
+        with:
+          repository: ritatrcr/helm-chart
+          token: ${{ secrets.PAT_HELMCHART }}
+          path: helm-chart
+
+      - name: Copy packaged chart to helm-chart repo
+        shell: bash
+        run: |
+          set -e
+          cp "manifiestos/${{ env.CHART_PKG }}" helm-chart/
+          ls -lah helm-chart
+
+      - name: Update Helm repo index (merge)
+        shell: bash
+        run: |
+          set -e
+          cd helm-chart
+          if [ -f index.yaml ]; then
+            helm repo index . --url https://github.com/Ritatrcr/helm-chart --merge index.yaml
+          else
+            helm repo index . --url https://github.com/Ritatrcr/helm-chart
+          fi
+          cat index.yaml | head -n 40
+
+      - name: Commit and push changes to helm-chart repo
+        shell: bash
+        run: |
+          set -e
+          cd helm-chart
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git pull --rebase || true
+          git add .
+          git commit -m "Publish chart patrones ${CHART_VERSION}" || echo "No commit needed"
+          git push origin main
