@@ -21,7 +21,8 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # ====== Helm / repos ======
-      PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}       # PAT con RW a ambos repos
+      PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}   # PAT con RW a ambos repos
+      GH_USER: ritatrcr                              # dueño del PAT y de los repos destino/origen
       HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
       HELM_PAGES_REPO: ritatrcr/helm-chart
       HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
@@ -32,33 +33,22 @@ jobs:
       HELM_CHART_NAME: pedido-app
 
     steps:
-      # ====== Checkout de este repo (usar GITHUB_TOKEN por defecto) ======
+      # ====== Checkout de este repo (usa GITHUB_TOKEN por defecto) ======
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
 
-      # ====== Validación temprana del PAT (contra los repos, no /user) ======
-      - name: Validate PAT (repo access)
+      # ====== Validación temprana del PAT (y acceso a ambos repos) ======
+      - name: Validate PAT to both repos
         shell: bash
-        env:
-          GH_USER: ritatrcr
         run: |
           set -euo pipefail
           [ -n "${PAT_HELMCHART:-}" ] || { echo "::error::Secret PAT_HELMCHART vacío/no configurado"; exit 1; }
 
-          check_repo () {
-            local REPO="$1"
+          for REPO in "${HELM_MANIFESTS_REPO}" "${HELM_PAGES_REPO}"; do
             echo "Comprobando acceso a https://github.com/${REPO} ..."
-            # HEAD es más robusto que chequear una rama específica
-            git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null 2>&1 || {
-              echo "::error::No hay acceso al repo ${REPO} con el PAT."
-              echo "Revisa: (1) token válido/no expirado, (2) permisos Contents: Read/Write,"
-              echo "(3) fine-grained con acceso explícito a ${REPO}, (4) SSO habilitado si aplica."
-              exit 1
-            }
-          }
-
-          check_repo "${HELM_MANIFESTS_REPO}"
-          check_repo "${HELM_PAGES_REPO}"
+            git ls-remote "https://${GH_USER}:${PAT_HELMCHART}@github.com/${REPO}.git" HEAD >/dev/null 2>&1 \
+              || { echo "::error::Sin acceso al repo ${REPO} con el PAT (permisos Contents:RW / repo seleccionado / SSO)."; exit 1; }
+          done
           echo "PAT OK para ambos repos."
 
       # ====== Herramientas ======
@@ -172,14 +162,14 @@ jobs:
           echo "  - $IMAGE_NAME:v${APP_VERSION}"
           echo "  - $IMAGE_NAME:${CI_TAG}"
 
-      # ====== CHECKOUT DEL REPO DE MANIFIESTOS (CHART FUENTE) ======
-      - name: Checkout manifests repo (chart fuente)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.HELM_MANIFESTS_REPO }}
-          token: ${{ env.PAT_HELMCHART }}
-          path: manifiestos
-          persist-credentials: false
+      # ====== CLONE MANIFIESTOS (manual con git+PAT, evita REST del checkout) ======
+      - name: Clone manifests repo (manual)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch main \
+            "https://${GH_USER}:${PAT_HELMCHART}@github.com/${HELM_MANIFESTS_REPO}.git" manifiestos
+          ls -lah manifiestos
 
       # ====== AUTODETECCIÓN DE RUTA DEL CHART ======
       - name: Detect chart directory
@@ -240,15 +230,14 @@ jobs:
           # Verifica que incluya values-dev/prod si los usas
           tar -tzf "$PKG_PATH" | grep -E 'values-(dev|prod)\.yaml' || true
 
-      # ====== PAGES REPO (ÍNDICE DE CHARTS) ======
-      - name: Checkout helm-chart repo (GitHub Pages)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.HELM_PAGES_REPO }}
-          token: ${{ env.PAT_HELMCHART }}
-          path: helm-chart
-          ref: ${{ env.HELM_PAGES_BRANCH }}
-          persist-credentials: false
+      # ====== CLONE helm-chart (manual con git+PAT) ======
+      - name: Clone helm-chart repo (Pages, manual)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "${HELM_PAGES_BRANCH}" \
+            "https://${GH_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git" helm-chart
+          ls -lah helm-chart
 
       - name: Copy packaged chart to helm-chart repo
         shell: bash
@@ -271,18 +260,11 @@ jobs:
 
       - name: Commit and push changes to helm-chart repo
         shell: bash
-        env:
-          PAT_USER: ritatrcr
         run: |
           set -euxo pipefail
           cd helm-chart
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
-          # Evita non-fast-forward
-          git fetch origin "${HELM_PAGES_BRANCH}" || true
-          git pull --rebase origin "${HELM_PAGES_BRANCH}" || true
           git add -A
           git commit -m "Publish chart ${HELM_CHART_NAME} ${CHART_VERSION}" || echo "No commit needed"
-          # Fuerza remoto con PAT para evitar 403 / Bad credentials
-          git remote set-url origin "https://${PAT_USER}:${PAT_HELMCHART}@github.com/${HELM_PAGES_REPO}.git"
           git push origin "${HELM_PAGES_BRANCH}"
