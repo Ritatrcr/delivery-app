@@ -15,29 +15,22 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # ====== Docker image ======
       IMAGE_NAME: ritatrcr/delivery-app
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # ====== Helm / repos ======
-      PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}   # PAT con RW a ambos repos
+      PAT_HELMCHART: ${{ secrets.PAT_HELMCHART }}
       GH_USER: ritatrcr
       HELM_MANIFESTS_REPO: ritatrcr/manifiestos-delivery-app
       HELM_PAGES_REPO: ritatrcr/helm-chart
       HELM_REPO_URL: https://ritatrcr.github.io/helm-chart/
       HELM_PAGES_BRANCH: main
-
-      # Ruta/nombre del chart en el repo de manifiestos
       HELM_CHART_DIR: charts/pedido-app
       HELM_CHART_NAME: pedido-app
 
     steps:
-      # ====== Checkout de este repo (usa GITHUB_TOKEN por defecto) ======
       - name: Checkout app repo (this)
         uses: actions/checkout@v4
 
-      # ====== Validación temprana del PAT contra los dos repos ======
       - name: Validate PAT to both repos
         shell: bash
         run: |
@@ -50,7 +43,6 @@ jobs:
           done
           echo "PAT OK para ambos repos."
 
-      # ====== Herramientas ======
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
@@ -66,7 +58,6 @@ jobs:
           yq --version
           helm version
 
-      # ---- Verifica que la app esté en delivery-app/ ----
       - name: Assert Node files exist
         shell: bash
         run: |
@@ -74,14 +65,12 @@ jobs:
           test -f delivery-app/package.json || (echo "Falta delivery-app/package.json" && exit 1)
           test -f delivery-app/package-lock.json || (echo "Falta delivery-app/package-lock.json" && exit 1)
 
-      # ====== Docker multi-arch build ======
       - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ====== LOGIN A DOCKER HUB ======
       - name: Validate DockerHub secrets
         shell: bash
         run: |
@@ -107,7 +96,6 @@ jobs:
           echo "Logged in as: ${WHO}"
           [ "$WHO" = "ritatrcr" ] || { echo "::error::Estás logueado como '$WHO', debe ser 'ritatrcr'"; exit 1; }
 
-      # ====== LEE VERSIÓN DESDE package.json ======
       - name: Read app version
         id: vars
         shell: bash
@@ -134,7 +122,6 @@ jobs:
           echo "DOCKER_VERSION=$DOCKER_VERSION" >> "$GITHUB_ENV"
           echo "CHART_VERSION=$CHART_VERSION"   >> "$GITHUB_ENV"
 
-      # ====== BUILD & PUSH MULTI-ARCH ======
       - name: Build & Push image (multi-arch)
         uses: docker/build-push-action@v6
         with:
@@ -144,7 +131,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:v${{ steps.vars.outputs.APP_VERSION }}
+            ${{ env.IMAGE_NAME }}:v{{ steps.vars.outputs.APP_VERSION }}
             ${{ env.IMAGE_NAME }}:${{ env.CI_TAG }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
@@ -161,7 +148,6 @@ jobs:
           echo "  - $IMAGE_NAME:v${APP_VERSION}"
           echo "  - $IMAGE_NAME:${CI_TAG}"
 
-      # ====== Checkout del repo de manifiestos con TOKEN ======
       - name: Checkout manifests repo (ritatrcr/manifiestos-delivery-app)
         uses: actions/checkout@v4
         with:
@@ -177,8 +163,7 @@ jobs:
           cd manifests
           git remote -v
 
-      # ====== Actualizar values y Chart.yaml, commit & push con PAT ======
-      - name: Update values-dev/prod with new Docker tag and (optionally) Chart.yaml version
+      - name: Update values-dev/prod with new Docker tag and Chart.yaml version
         shell: bash
         env:
           GIT_USER: ritatrcr
@@ -186,26 +171,17 @@ jobs:
         run: |
           set -euo pipefail
           cd manifests
-
-          # --- CREDENCIALES EN EL REMOTO (ANTES de cualquier fetch/pull/push) ---
           git remote set-url origin "https://${GIT_USER}:${PAT}@github.com/${HELM_MANIFESTS_REPO}.git"
-
           echo "Usando IMAGE_NAME=${IMAGE_NAME}"
-          echo "Usando APP_VERSION=${APP_VERSION}  (Chart.yaml no lleva 'v')"
-          echo "Usando DOCKER_VERSION=${DOCKER_VERSION}  (ej: v0.1.5)"
-
-          # Función que intenta actualizar app.image.*, backend.image.*, frontend.image.*
+          echo "Usando APP_VERSION=${APP_VERSION}"
+          echo "Usando DOCKER_VERSION=${DOCKER_VERSION}"
           bump_images () {
             local file="$1"
             echo "Actualizando $file"
-
-            # app.image.*
             yq -i '
               (.app.image.repository |= env(IMAGE_NAME)) |
               (.app.image.tag        |= env(DOCKER_VERSION))
             ' "$file" || true
-
-            # backend.image.* y frontend.image.*
             yq -i '
               (.backend.image.repository |= env(IMAGE_NAME)) |
               (.backend.image.tag        |= env(DOCKER_VERSION)) |
@@ -213,26 +189,17 @@ jobs:
               (.frontend.image.tag        |= env(DOCKER_VERSION))
             ' "$file" || true
           }
-
-          # Actualiza values-dev/prod si existen
           for f in \
             "${HELM_CHART_DIR}/values-dev.yaml" \
             "${HELM_CHART_DIR}/values-prod.yaml"
           do
             [ -f "$f" ] && bump_images "$f" || echo "Archivo no encontrado (ok): $f"
           done
-
-          # ====== OPCIONAL: fija la versión del Chart a la versión de la app ======
           if [ -f "${HELM_CHART_DIR}/Chart.yaml" ]; then
-            echo "Ajustando Chart.yaml version -> ${APP_VERSION}"
             yq -i ".version = strenv(APP_VERSION)" "${HELM_CHART_DIR}/Chart.yaml"
-            # O con build metadata:
-            # yq -i ".version = \"${APP_VERSION}+${{ github.run_number }}\"" "${HELM_CHART_DIR}/Chart.yaml"
           else
             echo "No existe Chart.yaml en ${HELM_CHART_DIR} (no se actualiza versión)."
           fi
-
-          # Git commit + push
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
