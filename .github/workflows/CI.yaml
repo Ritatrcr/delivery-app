@@ -22,7 +22,7 @@ jobs:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # ===== Git / PAT =====
+      # ===== Git / PAT (RW en ambos repos externos) =====
       GH_USER: ritatrcr
       PAT_TOKEN: ${{ secrets.PAT_HELMCHART }}
 
@@ -127,7 +127,7 @@ jobs:
           token: ${{ env.PAT_TOKEN }}
           persist-credentials: false
 
-      - name: Actualizar values-dev/prod con imagen:tag y Chart.yaml
+      - name: Actualizar values-dev/prod con app.image:tag y Chart.yaml
         env:
           IMAGE: ${{ env.IMAGE_NAME }}
           TAG: v${{ env.APP_VERSION }}
@@ -146,10 +146,11 @@ jobs:
           DEV_FILE="${CHART_DIR}/values-dev.yaml"
           if [ -f "$DEV_FILE" ]; then
             yq -i '
-              .image = (.image // {}) |
-              .image.repository = strenv(IMAGE) |
-              .image.tag = strenv(TAG) |
-              .image.pullPolicy = (.image.pullPolicy // "IfNotPresent")
+              .app = (.app // {}) |
+              .app.image = (.app.image // {}) |
+              .app.image.repository = strenv(IMAGE) |
+              .app.image.tag = strenv(TAG) |
+              .app.image.pullPolicy = (.app.image.pullPolicy // "IfNotPresent")
             ' "$DEV_FILE"
           else
             echo "::warning::No existe $DEV_FILE"
@@ -159,16 +160,17 @@ jobs:
           PROD_FILE="${CHART_DIR}/values-prod.yaml"
           if [ -f "$PROD_FILE" ]; then
             yq -i '
-              .image = (.image // {}) |
-              .image.repository = strenv(IMAGE) |
-              .image.tag = strenv(TAG) |
-              .image.pullPolicy = (.image.pullPolicy // "IfNotPresent")
+              .app = (.app // {}) |
+              .app.image = (.app.image // {}) |
+              .app.image.repository = strenv(IMAGE) |
+              .app.image.tag = strenv(TAG) |
+              .app.image.pullPolicy = (.app.image.pullPolicy // "IfNotPresent")
             ' "$PROD_FILE"
           else
             echo "::warning::No existe $PROD_FILE"
           fi
 
-          # --- Alinear versión del Chart con la del app (evita desfaces .tgz) ---
+          # --- Alinear versión del Chart con la del app (evita desfases .tgz) ---
           if [ -f "${CHART_DIR}/Chart.yaml" ]; then
             yq -i ".version = env(APP_VERSION)" "${CHART_DIR}/Chart.yaml"
           else
@@ -176,7 +178,7 @@ jobs:
           fi
 
           git add -A
-          git commit -m "chore(values): set image ${IMAGE}:${TAG} & chart=${APP_VERSION}" || echo "Nada que commitear"
+          git commit -m "chore(values): set app.image ${IMAGE}:${TAG} & chart=${APP_VERSION}" || echo "Nada que commitear"
           git push origin main
 
       # ---------- PUBLICAR CHART EN GITHUB PAGES (helm-chart) ----------
@@ -197,6 +199,12 @@ jobs:
           git checkout "${HELM_PAGES_BRANCH}"
           git reset --hard "origin/${HELM_PAGES_BRANCH}"
           git clean -fdx
+
+      - name: Helm dependency update
+        run: |
+          set -euxo pipefail
+          CHART_SRC="$GITHUB_WORKSPACE/manifests/${HELM_CHART_DIR}"
+          helm dependency update "$CHART_SRC"
 
       - name: Lint + Package chart en helm-pages/
         id: pkg
