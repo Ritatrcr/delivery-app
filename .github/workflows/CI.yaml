@@ -187,32 +187,47 @@ jobs:
           GIT_USER: ritatrcr
           PAT: ${{ secrets.PAT_HELMCHART }}
         run: |
-          set -euo pipefail
-          cd manifests
-          git remote set-url origin "https://${GIT_USER}:${PAT}@github.com/${HELM_MANIFESTS_REPO}.git"
-          DOCKER_VERSION="v${APP_VERSION}"
-          bump_images () {
-            local file="$1"
-            [ -f "$file" ] || { echo "Skip $file"; return 0; }
-            yq -i '
-              (.app.image.repository      |= env(IMAGE_NAME)) |
-              (.app.image.tag             |= env(DOCKER_VERSION)) |
-              (.backend.image.repository  |= env(IMAGE_NAME)) |
-              (.backend.image.tag         |= env(DOCKER_VERSION)) |
-              (.frontend.image.repository |= env(IMAGE_NAME)) |
-              (.frontend.image.tag        |= env(DOCKER_VERSION))
-            ' "$file" || true
-          }
-          bump_images "${HELM_CHART_DIR}/values-dev.yaml"
-          bump_images "${HELM_CHART_DIR}/values-prod.yaml"
-          if [ -f "${HELM_CHART_DIR}/Chart.yaml" ]; then
-            yq -i ".version = strenv(APP_VERSION)" "${HELM_CHART_DIR}/Chart.yaml"
-          fi
-          git config user.name  "github-actions"
-          git config user.email "github-actions@github.com"
-          git add -A
-          git commit -m "chore: image ${IMAGE_NAME}:${DOCKER_VERSION} chart ${APP_VERSION}" || echo "No hay cambios"
-          git push origin main || true
+            set -euo pipefail
+
+            cd manifests
+            git remote set-url origin "https://${GIT_USER}:${PAT}@github.com/${HELM_MANIFESTS_REPO}.git"
+
+            DOCKER_VERSION="v${APP_VERSION}"
+
+            # Validaciones rápidas
+            : "${IMAGE_NAME:?IMAGE_NAME vacío}"
+            : "${DOCKER_VERSION:?DOCKER_VERSION vacío}"
+            : "${HELM_CHART_DIR:?HELM_CHART_DIR vacío}"
+
+            # === SOLO PROD ===
+            PROD_FILE="${HELM_CHART_DIR}/values-prod.yaml"
+            if [ -f "$PROD_FILE" ]; then
+              # Sobrescribe exclusivamente:
+              # # === DELIVERY APP (PROD) ===
+              # image:
+              #   repository: ...
+              #   tag: ...
+              #   pullPolicy: IfNotPresent
+              yq -i '
+                .image = (.image // {}) |
+                .image.repository = strenv(IMAGE_NAME) |
+                .image.tag = strenv(DOCKER_VERSION) |
+                .image.pullPolicy = (.image.pullPolicy // "IfNotPresent")
+              ' "$PROD_FILE"
+            else
+              echo "::warning::No existe $PROD_FILE; nada que actualizar para PROD"
+            fi
+
+            # (Opcional) bump del chart si quieres versionar el paquete Helm
+            if [ -f "${HELM_CHART_DIR}/Chart.yaml" ]; then
+              yq -i ".version = strenv(APP_VERSION)" "${HELM_CHART_DIR}/Chart.yaml"
+            fi
+
+            git config user.name  "github-actions"
+            git config user.email "github-actions@github.com"
+            git add -A
+            git commit -m "chore(prod): image ${IMAGE_NAME}:${DOCKER_VERSION} chart ${APP_VERSION}" || echo "No hay cambios"
+            git push origin main || true
 
 
       - name: Final sync (manifests -> origin/main)
