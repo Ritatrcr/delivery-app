@@ -37,11 +37,13 @@ jobs:
       HELM_CHART_NAME: pedido-app
 
     steps:
-      - name: Checkout (este repo: código de la app)
+      - name: Checkout (repos externos)
         uses: actions/checkout@v4
         with:
-          ref: main
-          fetch-depth: 0
+          repository: ${{ env.HELM_MANIFESTS_REPO }}
+          token: ${{ env.PAT_TOKEN }}
+          path: manifests
+
 
       - name: Set up Node (para bump de package.json si aplica)
         uses: actions/setup-node@v4
