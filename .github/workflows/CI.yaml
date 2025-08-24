@@ -37,13 +37,13 @@ jobs:
       HELM_CHART_NAME: pedido-app
 
     steps:
-      - name: Checkout delivery-app (este repo)
+      - name: Checkout (este repo: código de la app)
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      - name: Set up Node (para leer/bumpear package.json si aplica)
+      - name: Set up Node (para bump de package.json si aplica)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -63,27 +63,38 @@ jobs:
           helm version
 
       # ---------- APP VERSION ----------
+      # Si tu app no es Node, puedes calcular una versión con fecha+sha y exportarla a APP_VERSION.
       - name: Bump app version (patch) y commit [skip ci]
         working-directory: ./delivery-app
         run: |
           set -euxo pipefail
-          CUR=$(node -e "console.log(require('./package.json').version)")
-          npm version patch --no-git-tag-version
-          NEW=$(node -e "console.log(require('./package.json').version)")
-          echo "APP_VERSION=$NEW" >> "$GITHUB_ENV"
-          cd ..
-          git config user.name  "github-actions"
-          git config user.email "github-actions@github.com"
-          git add delivery-app/package.json delivery-app/package-lock.json || true
-          git commit -m "chore(ci): bump app version $CUR -> $NEW [skip ci]" || true
-          git push || true
+          if [ -f package.json ]; then
+            CUR=$(node -e "console.log(require('./package.json').version)")
+            npm version patch --no-git-tag-version
+            NEW=$(node -e "console.log(require('./package.json').version)")
+            echo "APP_VERSION=$NEW" >> "$GITHUB_ENV"
+            cd ..
+            git config user.name  "github-actions"
+            git config user.email "github-actions@github.com"
+            git add delivery-app/package.json delivery-app/package-lock.json || true
+            git commit -m "chore(ci): bump app version $CUR -> $NEW [skip ci]" || true
+            git push || true
+          else
+            # Plan B: version semántica basada en fecha + corto del sha
+            NEW="$(date +%Y.%m.%d).${GITHUB_SHA::7}"
+            echo "APP_VERSION=$NEW" >> "$GITHUB_ENV"
+          fi
 
       - name: Ensure APP_VERSION env
         run: |
           set -euxo pipefail
-          [ -n "${APP_VERSION:-}" ] || {
-            echo "APP_VERSION=$(node -e "console.log(require('./delivery-app/package.json').version)")" >> "$GITHUB_ENV";
-          }
+          if [ -z "${APP_VERSION:-}" ]; then
+            if [ -f ./delivery-app/package.json ]; then
+              echo "APP_VERSION=$(node -e "console.log(require('./delivery-app/package.json').version)")" >> "$GITHUB_ENV"
+            else
+              echo "APP_VERSION=$(date +%Y.%m.%d).${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+            fi
+          fi
           echo "APP_VERSION=$APP_VERSION"
 
       # ---------- DOCKER BUILD & PUSH ----------
@@ -127,7 +138,8 @@ jobs:
           token: ${{ env.PAT_TOKEN }}
           persist-credentials: false
 
-      - name: Actualizar values-dev/prod con app.image:tag y Chart.yaml
+      # === Punto CLAVE: actualizar tags donde Argo los lee (values-dev/prod) ===
+      - name: Actualizar values-dev/prod con imagen y Chart.yaml
         env:
           IMAGE: ${{ env.IMAGE_NAME }}
           TAG: v${{ env.APP_VERSION }}
@@ -135,53 +147,54 @@ jobs:
           set -euxo pipefail
           cd manifests
 
-          # Apunta el remote con PAT para poder pushear
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
           git remote set-url origin "https://${GH_USER}:${PAT_TOKEN}@github.com/${HELM_MANIFESTS_REPO}.git"
 
           CHART_DIR="${HELM_CHART_DIR}"
 
-          # --- actualizar values-dev.yaml si existe ---
-          DEV_FILE="${CHART_DIR}/values-dev.yaml"
-          if [ -f "$DEV_FILE" ]; then
-            yq -i '
-              .app = (.app // {}) |
-              .app.image = (.app.image // {}) |
-              .app.image.repository = strenv(IMAGE) |
-              .app.image.tag = strenv(TAG) |
-              .app.image.pullPolicy = (.app.image.pullPolicy // "IfNotPresent")
-            ' "$DEV_FILE"
-          else
-            echo "::warning::No existe $DEV_FILE"
-          fi
+          bump_values () {
+            local FILE="$1"
+            if [ -f "$FILE" ]; then
+              # Soporta 3 estilos:
+              #  1) app.image (tu subchart único)
+              #  2) backend.image (si separas backend)
+              #  3) frontend.image (si separas frontend)
+              yq -i '
+                .app = (.app // {}) |
+                .app.image = (.app.image // {}) |
+                .app.image.repository = strenv(IMAGE) |
+                .app.image.tag = strenv(TAG) |
+                .app.image.pullPolicy = (.app.image.pullPolicy // "IfNotPresent") |
+                .backend = (.backend // .backend) |
+                (.backend.image.repository = strenv(IMAGE)) |
+                (.backend.image.tag = strenv(TAG)) |
+                (.backend.image.pullPolicy = (.backend.image.pullPolicy // "IfNotPresent")) |
+                .frontend = (.frontend // .frontend) |
+                (.frontend.image.repository = strenv(IMAGE)) |
+                (.frontend.image.tag = strenv(TAG)) |
+                (.frontend.image.pullPolicy = (.frontend.image.pullPolicy // "IfNotPresent"))
+              ' "$FILE"
+            else
+              echo "::warning::No existe $FILE"
+            fi
+          }
 
-          # --- actualizar values-prod.yaml si existe ---
-          PROD_FILE="${CHART_DIR}/values-prod.yaml"
-          if [ -f "$PROD_FILE" ]; then
-            yq -i '
-              .app = (.app // {}) |
-              .app.image = (.app.image // {}) |
-              .app.image.repository = strenv(IMAGE) |
-              .app.image.tag = strenv(TAG) |
-              .app.image.pullPolicy = (.app.image.pullPolicy // "IfNotPresent")
-            ' "$PROD_FILE"
-          else
-            echo "::warning::No existe $PROD_FILE"
-          fi
+          bump_values "${CHART_DIR}/values-dev.yaml"
+          bump_values "${CHART_DIR}/values-prod.yaml"
 
-          # --- Alinear versión del Chart con la del app (evita desfases .tgz) ---
+          # Alinear versión del Chart con la de la app (evita desfaces al empaquetar)
           if [ -f "${CHART_DIR}/Chart.yaml" ]; then
-            yq -i ".version = env(APP_VERSION)" "${CHART_DIR}/Chart.yaml"
+            yq -i ".version = env(APP_VERSION) | .appVersion = env(APP_VERSION)" "${CHART_DIR}/Chart.yaml"
           else
             echo "::error::No existe ${CHART_DIR}/Chart.yaml"; exit 1
           fi
 
           git add -A
-          git commit -m "chore(values): set app.image ${IMAGE}:${TAG} & chart=${APP_VERSION}" || echo "Nada que commitear"
+          git commit -m "chore(values): ${IMAGE}:${TAG} & chart=${APP_VERSION}" || echo "Nada que commitear"
           git push origin main
 
-      # ---------- PUBLICAR CHART EN GITHUB PAGES (helm-chart) ----------
+      # ---------- (Opcional) PUBLICAR CHART EN GITHUB PAGES ----------
       - name: Checkout helm-chart (Pages)
         uses: actions/checkout@v4
         with:
